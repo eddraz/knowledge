@@ -2,7 +2,12 @@
 name = "knowledge"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Local RAG knowledge base CLI: SQLite + sqlite-vec + FTS5, bge-m3 embeddings, grounded LLM answers"
+repository = "https://github.com/eddraz/knowledge"
+readme = "README.md"
 default-run = "knowledge"
+exclude = ["odd", ".github", "examples"]
 
 [lib]
 name = "knowledge"
