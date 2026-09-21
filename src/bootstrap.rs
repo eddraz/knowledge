@@ -21,6 +21,10 @@ const MODEL_REGISTRY: &[(&str, &str)] = &[
         "LFM2.5-230M-F16.gguf",
         "https://huggingface.co/LiquidAI/LFM2.5-230M-GGUF/resolve/main/LFM2.5-230M-F16.gguf",
     ),
+    (
+        "LFM2.5-tokenizer.json",
+        "https://huggingface.co/LiquidAI/LFM2.5-230M/resolve/main/tokenizer.json",
+    ),
 ];
 
 /// Path to the fork build of `llama-server` derived from the configured apps
@@ -61,6 +65,35 @@ pub fn model_registry_lookup(name: &str) -> Option<&'static str> {
 /// downloaded.
 pub fn needs_download(path: &Path) -> bool {
     !path.exists()
+}
+
+/// Ensure a registry file (model or tokenizer) is present in `models_dir`,
+/// downloading it only when necessary. Returns the resolved path.
+///
+/// This is used by the `native` feature binary to fetch the LFM2.5 tokenizer
+/// (`LFM2.5-tokenizer.json`) without forcing the default CLI to download it.
+pub fn ensure_registry_file(models_dir: &Path, name: &str, verbose: bool) -> Result<PathBuf> {
+    fs::create_dir_all(models_dir)?;
+    let path = models_dir.join(name);
+    if !needs_download(&path) {
+        if verbose {
+            eprintln!("[bootstrap] {name} already present");
+        }
+        return Ok(path);
+    }
+
+    match model_registry_lookup(name) {
+        Some(url) => {
+            eprintln!("[bootstrap] downloading {name} ...");
+            download_model(models_dir, name, url)?;
+            eprintln!("[bootstrap] {name} ready");
+            Ok(path)
+        }
+        None => Err(KnowledgeError::Other(format!(
+            "Registry file {name} is not known; place it manually at {}",
+            path.display()
+        ))),
+    }
 }
 
 /// Blocking, idempotent bootstrap routine.
@@ -288,6 +321,7 @@ mod tests {
     fn model_registry_lookup_is_case_sensitive() {
         assert!(model_registry_lookup("bge-m3-Q8_0.gguf").is_some());
         assert!(model_registry_lookup("LFM2.5-230M-F16.gguf").is_some());
+        assert!(model_registry_lookup("LFM2.5-tokenizer.json").is_some());
         assert!(model_registry_lookup("BGE-M3-Q8_0.GGUF").is_none());
         assert!(model_registry_lookup("unknown.gguf").is_none());
     }

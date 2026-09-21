@@ -4,26 +4,22 @@
 //! sqlite-vec (semantic KNN) and FTS5 (lexical BM25). `ask` answers strictly
 //! from retrieved content using a local LFM2.5 generator sidecar.
 
-mod ask;
-mod bootstrap;
-mod chunk;
-mod config;
-mod db;
-mod error;
-mod ingest;
-mod llm;
-mod meta;
-mod search;
-mod sidecar;
-
 use std::io::Read;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
-use crate::config::Config;
-use crate::error::KnowledgeError;
-use crate::meta::DocMeta;
+use knowledge::ask;
+use knowledge::bootstrap;
+use knowledge::config::Config;
+use knowledge::db;
+use knowledge::error::KnowledgeError;
+use knowledge::ingest;
+use knowledge::llm;
+use knowledge::meta;
+use knowledge::meta::DocMeta;
+use knowledge::search;
+use knowledge::sidecar::{self, SidecarRole};
 
 #[derive(Parser)]
 #[command(
@@ -167,7 +163,7 @@ async fn cmd_add(
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
 
     let meta = if meta_flag {
-        let _gen_sidecar = sidecar::acquire(cfg, sidecar::SidecarRole::Generator)
+        let _gen_sidecar = sidecar::acquire(cfg, SidecarRole::Generator)
             .await
             .map_err(map_err)?;
         let generated = meta::generate(&http, &cfg.gen_base_url(), &cfg.gen_model, &text).await;
@@ -190,7 +186,7 @@ async fn cmd_add(
     };
 
     // `ingest` performs embeddings; make sure the embedding sidecar is up.
-    let _embed_sidecar = sidecar::acquire(cfg, sidecar::SidecarRole::Embedding)
+    let _embed_sidecar = sidecar::acquire(cfg, SidecarRole::Embedding)
         .await
         .map_err(map_err)?;
 
