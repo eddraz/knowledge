@@ -83,6 +83,9 @@ enum Commands {
 
     /// Run first-run bootstrap manually and print resolution summary.
     Setup,
+
+    /// Update the knowledge CLI to the latest version.
+    Update,
 }
 
 #[tokio::main]
@@ -108,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Chown { source, owner } => cmd_chown(&cfg, &source, &owner)?,
         Commands::Status => cmd_status(&cfg)?,
         Commands::Setup => cmd_setup(&mut cfg)?,
+        Commands::Update => knowledge::update::cmd_update(verbose).map_err(map_err)?,
     }
     Ok(())
 }

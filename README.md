@@ -34,7 +34,10 @@ knowledge search "financiamiento" --mode hybrid                   # RRF fusion
 knowledge ask "¿Quién financia el Proyecto Aurora?"               # grounded answer + sources
 knowledge rm doc.md             # remove document
 knowledge status                # config + db summary
+knowledge update                # update the CLI (cargo install or GitHub Release)
 ```
+
+`knowledge update` checks the installed source: when the binary lives in the Cargo bin directory it runs `cargo install knowledge-cli --force` (preserving the `native` feature if `native-ask` is present), otherwise it downloads the matching GitHub Release archive for the current platform and replaces the `knowledge` and `native-ask` binaries in place.
 
 `ask` refuses politely when retrieval confidence is below `KNOWLEDGE_MIN_SCORE`
 (default 0.35): it answers only from your content, never from model memory.
@@ -46,7 +49,7 @@ knowledge status                # config + db summary
 | `KNOWLEDGE_DB` | `~/.local/share/knowledge/knowledge.db` | SQLite database path |
 | `KNOWLEDGE_LLAMA_SERVER` | `~/.local/bin/llama-server` | sidecar binary |
 | `KNOWLEDGE_MODELS_DIR` | `~/models` | GGUF models directory |
-| `KNOWLEDGE_EMBED_PORT` | `8098` | embeddings sidecar port |
+| `KNOWLEDGE_EMBED_PORT` | `28488` | embeddings sidecar port |
 | `KNOWLEDGE_GEN_PORT` | `8099` | generator sidecar port |
 | `KNOWLEDGE_TOP_K` | `5` | chunks retrieved per query |
 | `KNOWLEDGE_MIN_SCORE` | `0.35` | minimum cosine to trust retrieval |
