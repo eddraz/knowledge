@@ -69,9 +69,10 @@ search semantically (paraphrase, no shared words), ask grounded question, verify
 on unrelated question. Supervisor kills spawned sidecars on exit.
 - [x] commit: feat cli + e2e (evidence: ef6ab32 + 6574f14)
 
-### [ ] 8. README + close
+### [x] 8. README + close
+DONE. Usage, config env table, architecture notes, dev instructions.
 README: install, model paths config, usage examples, architecture diagram.
-- [ ] commit: docs readme (evidence: <hash>)
+- [x] commit: docs readme (evidence: pending this commit)
 
 ## Notes
 - Models live at ~/models/ (bge-m3-Q8_0.gguf, LFM2.5-230M-F16.gguf). llama-server at ~/.local/bin.
