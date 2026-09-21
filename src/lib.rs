@@ -19,3 +19,4 @@ pub mod meta;
 pub mod native;
 pub mod search;
 pub mod sidecar;
+pub mod update;
