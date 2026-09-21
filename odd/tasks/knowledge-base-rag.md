@@ -111,3 +111,11 @@ README: install, model paths config, usage examples, architecture diagram.
 ### [x] v4.4 Bootstrap: registry += tokenizer.json de LFM2.5 (download lazy)
 
 - [x] commit: feature(native) — verificado por parent (45 tests + cargo check --features native)
+
+## Slice v5 — candle como generador por defecto del CLI (2026-09-21)
+
+### [x] v5.1 src/native.rs (feature-gated): render_chat, eos_id, generate + GenStats
+### [x] v5.2 ask.rs/meta.rs: dispatch candle bajo --features native (sidecar solo en build default)
+### [x] v5.3 cmd_add ya no levanta el sidecar generador en builds nativos
+### [x] v5.4 E2E: add --meta 100% in-process (8099 nunca bindeado), ask nativo con respuesta grounded idéntica
+- [x] commit: verificado por parent (45 default / 46 native tests)
