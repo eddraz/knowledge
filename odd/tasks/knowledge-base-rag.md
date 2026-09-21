@@ -37,28 +37,37 @@ live sidecar path deliberately deferred to E2E (task 7). Drop kills only self-sp
 
 NOTE: all three tasks landed as one work-unit commit b0be59c (14 tests green, verified by parent).
 
-### [ ] 4. Ingest pipeline
+### [x] 4. Ingest pipeline
+DONE. sha2 dedupe, batched embeds, transactional inserts, markdown sections.
+E2E: /tmp/kb-doc.md -> 2 chunks (Ingested); re-add -> Unchanged 0 chunks.
 Chunker: sentence/paragraph-aware, target 400-800 chars, 15% overlap, unit tests with
 Spanish text. add flow: read file/stdin -> dedupe by hash -> chunk -> batch embed ->
 insert chunks + fts + vec in one transaction. `knowledge add` works against live bge-m3.
-- [ ] commit: feat ingest (evidence: <hash>)
+- [x] commit: feat ingest (evidence: ef6ab32)
 
-### [ ] 5. Search modes
+### [x] 5. Search modes
+DONE. Vector KNN + FTS5 (rank-ascending FIX + score=-rank) + RRF hybrid.
+E2E paraphrase test: "cuánta plata junta el programa cada temporada" -> Presupuesto chunk, 0.476 cosine, no shared keywords.
 search.rs: vector KNN (vec0 MATCH, score = 1 - distance), lexical (FTS5 MATCH BM25),
 optional RRF fusion. `knowledge search "q" [--mode] [-k]` prints chunks + scores.
-- [ ] commit: feat search (evidence: <hash>)
+- [x] commit: feat search (evidence: ef6ab32)
 
-### [ ] 6. Grounded ask
+### [x] 6. Grounded ask
+DONE. Gate (min_score), numbered-context citation prompt, LFM2.5 sidecar.
+E2E: "¿Quién financia el Proyecto Aurora?" -> "[2] El financiamiento proviene de un consorcio de tres universidades." in 4s. Off-topic -> graceful refusal.
 ask.rs: embed query -> KNN top-k -> score gate (< min_score -> "no está en la base")
 -> context prompt (strict: answer ONLY from context, Spanish) -> LFM2.5 -> print answer
 with source citations. `knowledge ask "pregunta" [-k]`.
-- [ ] commit: feat ask (evidence: <hash>)
+- [x] commit: feat ask (evidence: ef6ab32)
 
-### [ ] 7. CLI wiring + end-to-end smoke test
+### [x] 7. CLI wiring + end-to-end smoke test
+DONE. Async main, six commands, -k short flag, graceful NoRelevantContent.
+Sidecar probe fix: closed port -> spawn (was an error). Dedupe + rm verified E2E.
+NOTE: writer subagent runtime failed 3x mid-slice; parent finished main.rs wiring inline via serena (single-file fallback, reviewed + tested before commit).
 clap subcommands add/ask/search/list/rm/status. E2E: add a real Spanish text file,
 search semantically (paraphrase, no shared words), ask grounded question, verify refusal
 on unrelated question. Supervisor kills spawned sidecars on exit.
-- [ ] commit: feat cli + e2e (evidence: <hash>)
+- [x] commit: feat cli + e2e (evidence: ef6ab32 + 6574f14)
 
 ### [ ] 8. README + close
 README: install, model paths config, usage examples, architecture diagram.
