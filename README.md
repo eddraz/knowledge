@@ -12,21 +12,67 @@ answered **strictly** from their content. Everything runs on your machine.
 ## Requirements
 
 - Rust 1.85+ (crate uses edition 2021)
+
+### Default build (sidecar mode)
+
 - `llama-server` on PATH or `~/.local/bin/llama-server`
 - Models in `~/models` (or `KNOWLEDGE_MODELS_DIR`):
   - `bge-m3-Q8_0.gguf` (embeddings, 1024-dim, L2-normalized)
   - `LFM2.5-230M-F16.gguf` (grounded answer generation)
 
-## Install (crates.io)
+### Native build (`--features native`)
+
+- No `llama-server` needed — embeddings and generation run in-process via candle
+- Still needs `LFM2.5-230M-F16.gguf` (candle loads it for generation)
+- bge-m3 F32 weights auto-download on first native use (see [Native embeddings](#native-embeddings-features-native) below)
+
+## Install
+
+### crates.io
 
 ```bash
-cargo install knowledge-cli   # installs the `knowledge` command
+cargo install knowledge-cli                     # default build (sidecar mode)
+cargo install knowledge-cli --features native   # native in-process embeddings + generation
 ```
+
+### GitHub Releases
+
+Prebuilt native binaries are published as `knowledge-<version>-<target>.tar.gz`
+for:
+
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `aarch64-apple-darwin`
+- `x86_64-apple-darwin`
+
+Each tarball contains `knowledge`, `native-ask`, `README`, and `LICENSE`.
+
+```bash
+curl -L -o knowledge.tar.gz https://github.com/eddraz/knowledge/releases/download/<version>/knowledge-<version>-<target>.tar.gz
+tar -xzf knowledge.tar.gz
+mv knowledge native-ask ~/.local/bin/
+```
+
+See https://github.com/eddraz/knowledge/releases.
+
+### native-ask
+
+`native-ask` (shipped in release tarballs) provides in-process RAG: retrieval
+uses the embedding sidecar (KNN + score gate), while generation runs in-process
+via candle with the quantized LFM2.5 GGUF.
+
+```bash
+native-ask "question" --owner alice
+```
+
+Flags: `question`, `--owner`, `-k` (default 5), `--max-tokens` (default 512),
+`--model`, `--tokenizer`, `--verbose`.
 
 ## Usage
 
 ```bash
 knowledge add doc.md            # ingest a file ("-" reads stdin)
+knowledge add doc.md --meta     # LLM title/keywords extraction
 knowledge list                  # list documents
 knowledge owners                # list owner namespaces
 knowledge search "pregunta parafraseada" --mode vector   # semantic (default)
@@ -34,8 +80,10 @@ knowledge search "sensores" --mode lexical                        # FTS5 BM25
 knowledge search "financiamiento" --mode hybrid                   # RRF fusion
 knowledge ask "¿Quién financia el Proyecto Aurora?"               # grounded answer + sources
 knowledge rm doc.md             # remove document
+knowledge chown doc.md alice    # change document owner
 knowledge status                # config + db summary
 knowledge update                # update the CLI (cargo install or GitHub Release)
+knowledge setup                 # create/check data directory and config
 ```
 
 `knowledge update` checks the installed source: when the binary lives in the Cargo bin directory it runs `cargo install knowledge-cli --force` (preserving the `native` feature if `native-ask` is present), otherwise it downloads the matching GitHub Release archive for the current platform and replaces the `knowledge` and `native-ask` binaries in place.
@@ -55,14 +103,19 @@ knowledge update                # update the CLI (cargo install or GitHub Releas
 | `KNOWLEDGE_TOP_K` | `5` | chunks retrieved per query |
 | `KNOWLEDGE_MIN_SCORE` | `0.35` | minimum cosine to trust retrieval |
 | `KNOWLEDGE_TIMEOUT_SECS` | `120` | HTTP + sidecar health timeout |
+| `KNOWLEDGE_APPS_DIR` | `~/apps` | installed sidecar / app binaries directory |
+| `KNOWLEDGE_EMBEDDER` | `native` on native builds / `sidecar` | embedding backend selector |
+| `KNOWLEDGE_EMBED_MODEL` | `bge-m3-Q8_0.gguf` | default embedding GGUF |
+| `KNOWLEDGE_GEN_MODEL` | `LFM2.5-230M-F16.gguf` | default generation GGUF |
 
 ## How it works
 
 - **Chunking**: sentence-aware, ~600 chars target with word-complete overlap,
   split on markdown section boundaries (`#`).
-- **Embeddings**: bge-m3 served by a `llama-server --embedding` sidecar;
-  the CLI spawns it on demand and kills it on exit (reuses a healthy one if
-  the port already serves).
+- **Embeddings** (sidecar mode; native builds embed in-process, see
+  [Native embeddings](#native-embeddings-features-native) below): bge-m3 served
+  by a `llama-server --embedding` sidecar; the CLI spawns it on demand and kills
+  it on exit (reuses a healthy one if the port already serves).
 - **Storage**: SQLite with three access paths over the same chunks:
   - `chunks_vec`: sqlite-vec `vec0` float[1024], exact KNN with Euclidean
     distance converted to cosine (`score = 1 - d²/2`, valid because bge-m3
@@ -100,10 +153,10 @@ retrieval remains stable.
 ## Development
 
 ```bash
-cargo test                     # 47 unit tests (no sidecars required)
-cargo test --features native   # 50 unit tests, including candle in-process generation
+cargo test                     # 55 unit tests (no sidecars required)
+cargo test --features native   # 58 unit tests, including candle in-process generation
 cargo run -- status
 cargo build --release --features native
 ```
 
-Task history lives in `odd/tasks/knowledge-base-rag.md`.
+Task history lives in `odd/tasks/` (one document per feature).
