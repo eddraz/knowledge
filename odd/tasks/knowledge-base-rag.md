@@ -80,3 +80,16 @@ README: install, model paths config, usage examples, architecture diagram.
 - vec0 distance_metric=cosine if supported by installed sqlite-vec; else store L2-normalized
   vectors (server already normalizes) and convert: cosine = 1 - l2sq/2.
 - Implementation delegated to gentle-ai-worker per multi-file write rule; parent orchestrates.
+
+## Slice v2 — ownership + LLM metadata (2026-09-21)
+
+### [x] v2.1 Schema v2: owner/title/description/keywords + migración v1→v2
+### [x] v2.2 Owner-filtered knn/fts + SearchHit.owner + set_owner (chown)
+### [x] v2.3 src/meta.rs: DocMeta + parse tolerante + generación LFM2.5 opt-in (--meta)
+### [x] v2.4 CLI: --owner/--all globales, add --meta, Chown, list enriquecido
+### [x] v2.5 Chunk "meta" embedido (recupera primero para preguntas de alto nivel)
+
+- [x] commit: c4949f3 (40 tests verdes, verificados por parent)
+- E2E: correo determinista con --owner (xxx@gmail.com ✓); --all demuestra el fallo sin filtro;
+  --meta genera título/keywords y el chunk meta rankea primero para "de qué trata" (0.357).
+- Owner: determinista (MemPalace-validado): --owner gana, fallback _shared; LLM jamás asigna scope.
