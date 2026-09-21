@@ -101,3 +101,11 @@ README: install, model paths config, usage examples, architecture diagram.
 ### [x] v3.3 E2E HOME virgen: 7m17s clone+build+descarga 1GB + add/ask operativos
 ### [x] v3.4 Fixes: probe_health (todo fallo de transporte => spawn), owner Option (sin flag = todo), temperature 0.2 (mató la alucinación)
 - [x] commit: 1868380 (bootstrap, 45 tests) + fix commit final
+
+## Slice v4 — generación nativa con candle (en curso)
+
+### [ ] v4.1 Refactor a lib + bin: src/lib.rs expone los módulos; main.rs delgado
+### [ ] v4.2 Cargo feature "native" (candle-core/transformers + tokenizers, optional)
+### [x] v4.0 Receta verificada: candle quantized_lfm2::ModelWeights::from_gguf + LogitsProcessor; tokenizer.json desde LiquidAI/LFM2.5-230M; template de chat a implementar desde tokenizer_config.json
+### [ ] v4.3 src/bin/native-ask.rs: pregunta -> embed sidecar -> knn -> gate -> generación candle in-process
+### [ ] v4.4 Bootstrap: registry += tokenizer.json de LFM2.5
