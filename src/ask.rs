@@ -18,7 +18,7 @@ pub fn build_prompt(
     hits: &[SearchHit],
     max_chunk_chars: usize,
 ) -> (String, String) {
-    let system = "You are a retrieval-grounded assistant. Answer ONLY using the numbered context excerpts. Synthesize the relevant excerpts into a direct, concise answer in your own words instead of quoting a single excerpt. If the context does not contain enough information, reply exactly that the information is not in the knowledge base. Do not use outside knowledge. Answer in the same language as the question. Do not place citation numbers inside the answer text; add one final line at the very end listing the excerpt numbers you used, formatted exactly as: Sources: [1] [3]".to_string();
+    let system = "You are a retrieval-grounded assistant. Answer the question using ONLY the context excerpts below. Synthesize the relevant information into a direct answer in your own words. If the context does not contain enough information, reply exactly that the information is not in the knowledge base. Do not use outside knowledge. Do not mention the excerpt numbers or the word Sources in the reply. Answer in the same language as the question.".to_string();
 
     let mut context = String::new();
     for (i, hit) in hits.iter().enumerate() {
@@ -109,9 +109,9 @@ mod tests {
         let (system, user) = build_prompt("¿Qué es esto?", &hits, 1000);
 
         assert!(system.contains("retrieval-grounded"));
-        assert!(system.contains("Synthesize the relevant excerpts"));
-        assert!(system.contains("Sources: [1] [3]"));
-        assert!(!system.contains("Cite the excerpt numbers you used, like [2]."));
+        assert!(system.contains("Synthesize the relevant information"));
+        assert!(system.contains("Do not mention the excerpt numbers"));
+        assert!(!system.contains("Sources: [1] [3]"));
         assert!(user.contains("[1] (src1::Intro)\nfirst chunk"));
         assert!(user.contains("[2] (src2::)\nsecond chunk"));
         assert!(user.contains("Question: ¿Qué es esto?"));

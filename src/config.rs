@@ -40,8 +40,8 @@ impl Config {
             db_path,
             llama_server_bin,
             models_dir,
-            DEFAULT_EMBED_MODEL.to_string(),
-            DEFAULT_GEN_MODEL.to_string(),
+            env_string("KNOWLEDGE_EMBED_MODEL", DEFAULT_EMBED_MODEL),
+            env_string("KNOWLEDGE_GEN_MODEL", DEFAULT_GEN_MODEL),
             embed_port,
             gen_port,
             600,
@@ -119,6 +119,10 @@ fn default_models_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("models")
+}
+
+fn env_string(name: &str, default: &str) -> String {
+    env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
