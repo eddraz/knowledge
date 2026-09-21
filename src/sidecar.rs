@@ -160,10 +160,12 @@ async fn probe_health(base_url: &str) -> Result<bool> {
     let url = format!("{base_url}{HEALTH_PATH}");
     // A connection failure simply means the sidecar is not running yet; the
     // caller is expected to spawn it in that case.
+    // Any transport failure (refused, reset, timeout...) means there is no
+    // healthy sidecar listening yet; the caller spawns one in that case.
+    // Real post-spawn failures surface later in the health polling loop.
     let response = match client.get(&url).send().await {
         Ok(response) => response,
-        Err(err) if err.is_connect() || err.is_timeout() => return Ok(false),
-        Err(err) => return Err(KnowledgeError::Http(err)),
+        Err(_) => return Ok(false),
     };
 
     if !response.status().is_success() {

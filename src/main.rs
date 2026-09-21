@@ -36,9 +36,10 @@ struct Cli {
     #[arg(long, global = true)]
     verbose: bool,
 
-    /// Owner namespace for searches and the default owner for new documents.
-    #[arg(long, global = true, default_value = "_shared")]
-    owner: String,
+    /// Owner namespace: narrows searches to this owner (plus _shared) and
+    /// becomes the default owner for new documents. Omit to search everything.
+    #[arg(long, global = true)]
+    owner: Option<String>,
 
     /// Disable owner filtering (search across all owners).
     #[arg(long, global = true)]
@@ -93,13 +94,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut cfg = Config::load().map_err(map_err)?;
     let verbose = cli.verbose;
-    let owner_string = cli.owner.clone();
-    let owner = if cli.all {
-        None
-    } else {
-        Some(owner_string.as_str())
-    };
-    let default_owner = owner_string.as_str();
+    // No --owner: search everything (pronouns like "my" need an explicit
+    // --owner to be meaningful). --all is an explicit synonym.
+    let owner = if cli.all { None } else { cli.owner.as_deref() };
+    let default_owner = cli.owner.as_deref().unwrap_or("_shared");
 
     match cli.command {
         Commands::Add { path, meta } => {
