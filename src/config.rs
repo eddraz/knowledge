@@ -12,6 +12,7 @@ pub struct Config {
     pub db_path: PathBuf,
     pub llama_server_bin: PathBuf,
     pub models_dir: PathBuf,
+    pub apps_dir: PathBuf,
     pub embed_model: String,
     pub gen_model: String,
     pub embed_port: u16,
@@ -29,6 +30,7 @@ impl Config {
         let llama_server_bin =
             env_path("KNOWLEDGE_LLAMA_SERVER").unwrap_or_else(default_llama_server_bin);
         let models_dir = env_path("KNOWLEDGE_MODELS_DIR").unwrap_or_else(default_models_dir);
+        let apps_dir = env_path("KNOWLEDGE_APPS_DIR").unwrap_or_else(default_apps_dir);
 
         let embed_port = env_parse("KNOWLEDGE_EMBED_PORT")?.unwrap_or(8098);
         let gen_port = env_parse("KNOWLEDGE_GEN_PORT")?.unwrap_or(8099);
@@ -40,8 +42,8 @@ impl Config {
             db_path,
             llama_server_bin,
             models_dir,
-            DEFAULT_EMBED_MODEL.to_string(),
-            DEFAULT_GEN_MODEL.to_string(),
+            env_string("KNOWLEDGE_EMBED_MODEL", DEFAULT_EMBED_MODEL),
+            env_string("KNOWLEDGE_GEN_MODEL", DEFAULT_GEN_MODEL),
             embed_port,
             gen_port,
             600,
@@ -49,6 +51,7 @@ impl Config {
             top_k,
             min_score,
             request_timeout_secs,
+            apps_dir,
         )
     }
 
@@ -66,11 +69,13 @@ impl Config {
         top_k: usize,
         min_score: f32,
         request_timeout_secs: u64,
+        apps_dir: impl AsRef<Path>,
     ) -> Result<Self> {
         Ok(Self {
             db_path: db_path.as_ref().to_path_buf(),
             llama_server_bin: llama_server_bin.as_ref().to_path_buf(),
             models_dir: models_dir.as_ref().to_path_buf(),
+            apps_dir: apps_dir.as_ref().to_path_buf(),
             embed_model: embed_model.into(),
             gen_model: gen_model.into(),
             embed_port,
@@ -121,6 +126,16 @@ fn default_models_dir() -> PathBuf {
         .join("models")
 }
 
+fn default_apps_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("apps")
+}
+
+fn env_string(name: &str, default: &str) -> String {
+    env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
 fn env_path(name: &str) -> Option<PathBuf> {
     env::var(name).ok().map(PathBuf::from)
 }
@@ -157,12 +172,14 @@ mod tests {
             7,
             0.5,
             60,
+            "/tmp/apps",
         )
         .unwrap();
 
         assert_eq!(cfg.db_path, PathBuf::from("/tmp/db"));
         assert_eq!(cfg.llama_server_bin, PathBuf::from("/tmp/llama-server"));
         assert_eq!(cfg.models_dir, PathBuf::from("/tmp/models"));
+        assert_eq!(cfg.apps_dir, PathBuf::from("/tmp/apps"));
         assert_eq!(cfg.embed_model, "embed.gguf");
         assert_eq!(cfg.gen_model, "gen.gguf");
         assert_eq!(cfg.embed_port, 9001);
@@ -189,6 +206,7 @@ mod tests {
             5,
             0.35,
             120,
+            "/tmp/apps",
         )
         .unwrap();
 
@@ -199,5 +217,20 @@ mod tests {
         assert_eq!(cfg.gen_model_path(), PathBuf::from("/tmp/models/gen.gguf"));
         assert_eq!(cfg.embed_base_url(), "http://127.0.0.1:8098");
         assert_eq!(cfg.gen_base_url(), "http://127.0.0.1:8099");
+    }
+
+    #[test]
+    fn apps_dir_defaults_to_home_apps() {
+        let cfg = Config::load().unwrap();
+        let expected = dirs::home_dir().unwrap().join("apps");
+        assert_eq!(cfg.apps_dir, expected);
+    }
+
+    #[test]
+    fn apps_dir_env_override() {
+        std::env::set_var("KNOWLEDGE_APPS_DIR", "/tmp/custom-apps");
+        let cfg = Config::load().unwrap();
+        std::env::remove_var("KNOWLEDGE_APPS_DIR");
+        assert_eq!(cfg.apps_dir, PathBuf::from("/tmp/custom-apps"));
     }
 }

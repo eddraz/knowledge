@@ -147,6 +147,9 @@ pub async fn generate(
             {"role": "user", "content": user},
         ],
         "max_tokens": max_tokens,
+        // Grounded answers: low temperature to stay close to the context and
+        // minimise hallucination on small generator models.
+        "temperature": 0.2,
     });
 
     let response = http
