@@ -17,6 +17,12 @@ answered **strictly** from their content. Everything runs on your machine.
   - `bge-m3-Q8_0.gguf` (embeddings, 1024-dim, L2-normalized)
   - `LFM2.5-230M-F16.gguf` (grounded answer generation)
 
+## Install (crates.io)
+
+```bash
+cargo install knowledge-cli   # installs the `knowledge` command
+```
+
 ## Usage
 
 ```bash
