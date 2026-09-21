@@ -73,6 +73,9 @@ enum Commands {
     /// List ingested documents.
     List,
 
+    /// List owner namespaces with document and chunk counts.
+    Owners,
+
     /// Remove a document and all of its chunks.
     Rm { source: String },
 
@@ -105,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
             cmd_search(&mut cfg, &query, &mode, k, owner, verbose).await?
         }
         Commands::List => cmd_list(&cfg)?,
+        Commands::Owners => cmd_owners(&cfg)?,
         Commands::Rm { source } => cmd_rm(&cfg, &source)?,
         Commands::Chown { source, owner } => cmd_chown(&cfg, &source, &owner)?,
         Commands::Status => cmd_status(&cfg)?,
@@ -288,6 +292,24 @@ fn cmd_list(cfg: &Config) -> anyhow::Result<()> {
         println!(
             "{}  {}  {}{}{}",
             doc.id, doc.owner, doc.source, title_part, keywords_part
+        );
+    }
+    Ok(())
+}
+
+fn cmd_owners(cfg: &Config) -> anyhow::Result<()> {
+    let conn = open_db(cfg)?;
+    let owners = db::list_owners(&conn).map_err(map_err)?;
+    if owners.is_empty() {
+        println!("No documents ingested yet.");
+        return Ok(());
+    }
+    for row in owners {
+        println!(
+            "{owner:<20} {documents:>6} docs  {chunks:>6} chunks",
+            owner = row.owner,
+            documents = row.documents,
+            chunks = row.chunks,
         );
     }
     Ok(())

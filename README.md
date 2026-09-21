@@ -28,6 +28,7 @@ cargo install knowledge-cli   # installs the `knowledge` command
 ```bash
 knowledge add doc.md            # ingest a file ("-" reads stdin)
 knowledge list                  # list documents
+knowledge owners                # list owner namespaces
 knowledge search "pregunta parafraseada" --mode vector   # semantic (default)
 knowledge search "sensores" --mode lexical                        # FTS5 BM25
 knowledge search "financiamiento" --mode hybrid                   # RRF fusion
