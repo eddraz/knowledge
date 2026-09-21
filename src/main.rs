@@ -47,7 +47,7 @@ enum Commands {
         #[arg(long, default_value = "vector")]
         mode: String,
         /// Maximum number of results.
-        #[arg(long, default_value = "5")]
+        #[arg(long, short = 'k', default_value = "5")]
         k: usize,
     },
 

@@ -158,11 +158,13 @@ async fn probe_health(base_url: &str) -> Result<bool> {
         .map_err(KnowledgeError::Http)?;
 
     let url = format!("{base_url}{HEALTH_PATH}");
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(KnowledgeError::Http)?;
+    // A connection failure simply means the sidecar is not running yet; the
+    // caller is expected to spawn it in that case.
+    let response = match client.get(&url).send().await {
+        Ok(response) => response,
+        Err(err) if err.is_connect() || err.is_timeout() => return Ok(false),
+        Err(err) => return Err(KnowledgeError::Http(err)),
+    };
 
     if !response.status().is_success() {
         return Ok(false);
