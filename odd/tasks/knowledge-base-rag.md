@@ -104,8 +104,10 @@ README: install, model paths config, usage examples, architecture diagram.
 
 ## Slice v4 — generación nativa con candle (en curso)
 
-### [ ] v4.1 Refactor a lib + bin: src/lib.rs expone los módulos; main.rs delgado
-### [ ] v4.2 Cargo feature "native" (candle-core/transformers + tokenizers, optional)
+### [x] v4.1 Refactor a lib + bin: src/lib.rs expone los módulos; main.rs delgado
+### [x] v4.2 Cargo feature "native" (candle renombrado, candle-transformers + tokenizers, optional)
 ### [x] v4.0 Receta verificada: candle quantized_lfm2::ModelWeights::from_gguf + LogitsProcessor; tokenizer.json desde LiquidAI/LFM2.5-230M; template de chat a implementar desde tokenizer_config.json
-### [ ] v4.3 src/bin/native-ask.rs: pregunta -> embed sidecar -> knn -> gate -> generación candle in-process
-### [ ] v4.4 Bootstrap: registry += tokenizer.json de LFM2.5
+### [x] v4.3 src/bin/native-ask.rs: pregunta -> embed sidecar -> knn -> gate -> generación candle in-process (smoke: respuesta idéntica al sidecar, 14.4 tok/s decode)
+### [x] v4.4 Bootstrap: registry += tokenizer.json de LFM2.5 (download lazy)
+
+- [x] commit: feature(native) — verificado por parent (45 tests + cargo check --features native)
