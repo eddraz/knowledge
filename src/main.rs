@@ -13,6 +13,7 @@ use knowledge::ask;
 use knowledge::bootstrap;
 use knowledge::config::Config;
 use knowledge::db;
+use knowledge::embed::EmbedderMode;
 use knowledge::error::KnowledgeError;
 use knowledge::ingest;
 use knowledge::llm;
@@ -72,6 +73,9 @@ enum Commands {
     /// List ingested documents.
     List,
 
+    /// List owner namespaces with document and chunk counts.
+    Owners,
+
     /// Remove a document and all of its chunks.
     Rm { source: String },
 
@@ -107,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
             cmd_search(&mut cfg, &query, &mode, k, owner, verbose).await?
         }
         Commands::List => cmd_list(&cfg)?,
+        Commands::Owners => cmd_owners(&cfg)?,
         Commands::Rm { source } => cmd_rm(&cfg, &source)?,
         Commands::Chown { source, owner } => cmd_chown(&cfg, &source, &owner)?,
         Commands::Status => cmd_status(&cfg)?,
@@ -194,10 +199,17 @@ async fn cmd_add(
         None
     };
 
-    // `ingest` performs embeddings; make sure the embedding sidecar is up.
-    let _embed_sidecar = sidecar::acquire(cfg, SidecarRole::Embedding)
-        .await
-        .map_err(map_err)?;
+    // `ingest` performs embeddings. In sidecar mode the embedding sidecar
+    // must be running; native mode runs in-process and needs no sidecar.
+    let _embed_sidecar = if cfg.embedder_mode == EmbedderMode::Sidecar {
+        Some(
+            sidecar::acquire(cfg, SidecarRole::Embedding)
+                .await
+                .map_err(map_err)?,
+        )
+    } else {
+        None
+    };
 
     let mut conn = open_db(cfg)?;
     let report = ingest::ingest(&http, cfg, &mut conn, &source, &text, owner, meta)
@@ -289,6 +301,24 @@ fn cmd_list(cfg: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cmd_owners(cfg: &Config) -> anyhow::Result<()> {
+    let conn = open_db(cfg)?;
+    let owners = db::list_owners(&conn).map_err(map_err)?;
+    if owners.is_empty() {
+        println!("No documents ingested yet.");
+        return Ok(());
+    }
+    for row in owners {
+        println!(
+            "{owner:<20} {documents:>6} docs  {chunks:>6} chunks",
+            owner = row.owner,
+            documents = row.documents,
+            chunks = row.chunks,
+        );
+    }
+    Ok(())
+}
+
 fn cmd_rm(cfg: &Config, source: &str) -> anyhow::Result<()> {
     let conn = open_db(cfg)?;
     let removed = db::delete_document(&conn, source).map_err(map_err)?;
@@ -324,11 +354,36 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
     );
     println!("documents: {documents}, chunks: {chunks}");
     println!("models dir: {}", cfg.models_dir.display());
-    println!(
-        "embed model: {} (exists: {})",
-        cfg.embed_model,
-        cfg.embed_model_path().exists()
-    );
+
+    match cfg.embedder_mode {
+        EmbedderMode::Native => {
+            println!("embedder: native candle bge-m3");
+            println!(
+                "  config: {} (exists: {})",
+                cfg.native_embed_config_path().display(),
+                cfg.native_embed_config_path().exists()
+            );
+            println!(
+                "  tokenizer: {} (exists: {})",
+                cfg.native_embed_tokenizer_path().display(),
+                cfg.native_embed_tokenizer_path().exists()
+            );
+            println!(
+                "  weights: {} (exists: {})",
+                cfg.native_embed_weights_path().display(),
+                cfg.native_embed_weights_path().exists()
+            );
+        }
+        EmbedderMode::Sidecar => {
+            println!("embedder: sidecar");
+            println!(
+                "embed model: {} (exists: {})",
+                cfg.embed_model,
+                cfg.embed_model_path().exists()
+            );
+        }
+    }
+
     println!(
         "gen model: {} (exists: {})",
         cfg.gen_model,
@@ -359,7 +414,23 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
 fn cmd_setup(cfg: &mut Config) -> anyhow::Result<()> {
     bootstrap::ensure_ready(cfg, true).map_err(map_err)?;
     println!("llama-server: {}", cfg.llama_server_bin.display());
-    println!("embed model: {}", cfg.embed_model_path().display());
+    match cfg.embedder_mode {
+        EmbedderMode::Native => {
+            println!("embedder: native candle bge-m3");
+            println!("  config: {}", cfg.native_embed_config_path().display());
+            println!(
+                "  tokenizer: {}",
+                cfg.native_embed_tokenizer_path().display()
+            );
+            println!(
+                "  weights: {}",
+                cfg.native_embed_weights_path().display()
+            );
+        }
+        EmbedderMode::Sidecar => {
+            println!("embed model: {}", cfg.embed_model_path().display());
+        }
+    }
     println!("gen model: {}", cfg.gen_model_path().display());
     Ok(())
 }

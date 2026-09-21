@@ -5,8 +5,9 @@ use rusqlite::Connection;
 
 use crate::config::Config;
 use crate::db::{fts_search, knn_search, SearchHit};
+use crate::embed::{embed_texts, EmbedderMode};
 use crate::error::Result;
-use crate::llm::{embed_texts, EMBED_DIM};
+use crate::llm::EMBED_DIM;
 use crate::sidecar::{acquire, SidecarRole};
 
 const RRF_K: f64 = 60.0;
@@ -62,9 +63,12 @@ async fn vector_search(
     k: usize,
     owner: Option<&str>,
 ) -> Result<Vec<SearchHit>> {
-    let _handle = acquire(cfg, SidecarRole::Embedding).await?;
-    let base_url = cfg.embed_base_url();
-    let embeddings = embed_texts(http, &base_url, &[query.to_string()]).await?;
+    let _handle = if cfg.embedder_mode == EmbedderMode::Sidecar {
+        Some(acquire(cfg, SidecarRole::Embedding).await?)
+    } else {
+        None
+    };
+    let embeddings = embed_texts(http, cfg, &[query.to_string()]).await?;
     let query_vec = embeddings
         .into_iter()
         .next()

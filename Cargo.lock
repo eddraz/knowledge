@@ -1212,6 +1212,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "candle-core",
+ "candle-nn",
  "candle-transformers",
  "clap",
  "dirs",

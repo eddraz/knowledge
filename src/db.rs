@@ -466,6 +466,40 @@ pub fn list_documents(conn: &Connection) -> Result<Vec<DocInfo>> {
         .map_err(KnowledgeError::Db)
 }
 
+/// Summary of documents and chunks for a single owner namespace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwnerSummary {
+    pub owner: String,
+    pub documents: i64,
+    pub chunks: i64,
+}
+
+/// List distinct owner namespaces with their document and chunk counts.
+pub fn list_owners(conn: &Connection) -> Result<Vec<OwnerSummary>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.owner, COUNT(DISTINCT d.id), COUNT(c.id)
+             FROM documents d
+             LEFT JOIN chunks c ON c.document_id = d.id
+             GROUP BY d.owner
+             ORDER BY d.owner ASC",
+        )
+        .map_err(KnowledgeError::Db)?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(OwnerSummary {
+                owner: row.get(0)?,
+                documents: row.get(1)?,
+                chunks: row.get(2)?,
+            })
+        })
+        .map_err(KnowledgeError::Db)?;
+
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(KnowledgeError::Db)
+}
+
 /// Change the owner of a document.  Returns `true` if a row was updated.
 pub fn set_owner(conn: &Connection, source: &str, owner: &str) -> Result<bool> {
     let changed = conn
@@ -754,5 +788,38 @@ mod tests {
 
         let deleted_again = delete_document(&conn, "remove.txt").unwrap();
         assert!(!deleted_again);
+    }
+
+    #[test]
+    fn list_owners_groups_counts_and_orders_alphabetically() {
+        let conn = schema();
+
+        // _shared: one document, no chunks.
+        insert_document(&conn, "shared.txt", "h1", "_shared").unwrap();
+
+        // alice: two documents, one with chunks.
+        let alice_doc1 = insert_document(&conn, "alice1.txt", "h2", "alice").unwrap();
+        let alice_doc2 = insert_document(&conn, "alice2.txt", "h3", "alice").unwrap();
+        insert_chunk(&conn, alice_doc1, None, "alice first", &[0.0; 1024]).unwrap();
+        insert_chunk(&conn, alice_doc1, None, "alice second", &[0.0; 1024]).unwrap();
+        insert_chunk(&conn, alice_doc2, None, "alice third", &[0.0; 1024]).unwrap();
+
+        // bob: one document, no chunks.
+        insert_document(&conn, "bob.txt", "h4", "bob").unwrap();
+
+        let owners = list_owners(&conn).unwrap();
+        assert_eq!(owners.len(), 3);
+
+        assert_eq!(owners[0].owner, "_shared");
+        assert_eq!(owners[0].documents, 1);
+        assert_eq!(owners[0].chunks, 0);
+
+        assert_eq!(owners[1].owner, "alice");
+        assert_eq!(owners[1].documents, 2);
+        assert_eq!(owners[1].chunks, 3);
+
+        assert_eq!(owners[2].owner, "bob");
+        assert_eq!(owners[2].documents, 1);
+        assert_eq!(owners[2].chunks, 0);
     }
 }

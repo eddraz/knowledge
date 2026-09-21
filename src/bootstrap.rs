@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::config::Config;
+use crate::embed::EmbedderMode;
 use crate::error::{KnowledgeError, Result};
 
 const MODEL_REGISTRY: &[(&str, &str)] = &[
@@ -26,6 +27,31 @@ const MODEL_REGISTRY: &[(&str, &str)] = &[
         "https://huggingface.co/LiquidAI/LFM2.5-230M/resolve/main/tokenizer.json",
     ),
 ];
+
+/// Native candle bge-m3 files, downloaded into `models_dir/bge-m3/`.
+///
+/// Note: the official BAAI/bge-m3 repository does not provide a single
+/// `model.safetensors` file; the F32 weights are shipped as `pytorch_model.bin`
+/// (~2.27 GB). We load that PyTorch checkpoint directly with candle.
+const NATIVE_EMBED_REGISTRY: &[(&str, &str)] = &[
+    (
+        "config.json",
+        "https://huggingface.co/BAAI/bge-m3/resolve/main/config.json",
+    ),
+    (
+        "tokenizer.json",
+        "https://huggingface.co/BAAI/bge-m3/resolve/main/tokenizer.json",
+    ),
+    (
+        "pytorch_model.bin",
+        "https://huggingface.co/BAAI/bge-m3/resolve/main/pytorch_model.bin",
+    ),
+];
+
+/// Path to the native candle bge-m3 directory inside `models_dir`.
+pub fn native_embed_dir(models_dir: &Path) -> PathBuf {
+    models_dir.join("bge-m3")
+}
 
 /// Path to the fork build of `llama-server` derived from the configured apps
 /// directory.
@@ -104,6 +130,9 @@ pub fn ensure_registry_file(models_dir: &Path, name: &str, verbose: bool) -> Res
 /// doing work.
 pub fn ensure_ready(cfg: &mut Config, verbose: bool) -> Result<()> {
     resolve_llama_server_binary(cfg, verbose)?;
+    if cfg.embedder_mode == EmbedderMode::Native {
+        ensure_native_embed_models(cfg, verbose)?;
+    }
     ensure_models(cfg, verbose)?;
     Ok(())
 }
@@ -226,7 +255,10 @@ fn run_with_stderr_tee(cmd: &mut Command, label: &str) -> Result<()> {
 fn ensure_models(cfg: &Config, verbose: bool) -> Result<()> {
     fs::create_dir_all(&cfg.models_dir)?;
 
-    let model_names = [&cfg.embed_model, &cfg.gen_model];
+    let model_names: Vec<&String> = match cfg.embedder_mode {
+        EmbedderMode::Native => vec![&cfg.gen_model],
+        EmbedderMode::Sidecar => vec![&cfg.embed_model, &cfg.gen_model],
+    };
     for name in model_names {
         let path = cfg.models_dir.join(name);
         if !needs_download(&path) {
@@ -255,7 +287,12 @@ fn ensure_models(cfg: &Config, verbose: bool) -> Result<()> {
 }
 
 fn download_model(models_dir: &Path, name: &str, url: &str) -> Result<()> {
-    let part_path = models_dir.join(format!("{name}.part"));
+    download_model_to_dir(models_dir, name, url)
+}
+
+fn download_model_to_dir(dir: &Path, name: &str, url: &str) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    let part_path = dir.join(format!("{name}.part"));
 
     if part_path.exists() {
         fs::remove_file(&part_path)?;
@@ -278,11 +315,32 @@ fn download_model(models_dir: &Path, name: &str, url: &str) -> Result<()> {
         )));
     }
 
-    let final_path = models_dir.join(name);
+    let final_path = dir.join(name);
     fs::rename(&part_path, &final_path).map_err(|e| {
         let _ = fs::remove_file(&part_path);
         KnowledgeError::Io(e)
     })?;
+    Ok(())
+}
+
+/// Ensure the native candle bge-m3 files are present in `models_dir/bge-m3/`.
+fn ensure_native_embed_models(cfg: &Config, verbose: bool) -> Result<()> {
+    let dir = cfg.native_embed_dir();
+    fs::create_dir_all(&dir)?;
+
+    for (name, url) in NATIVE_EMBED_REGISTRY {
+        let path = dir.join(name);
+        if !needs_download(&path) {
+            if verbose {
+                eprintln!("[bootstrap] native embed file {name} already present");
+            }
+            continue;
+        }
+        eprintln!("[bootstrap] downloading native embed file {name} ...");
+        download_model_to_dir(&dir, name, url)?;
+        eprintln!("[bootstrap] native embed file {name} ready");
+    }
+
     Ok(())
 }
 
@@ -315,6 +373,14 @@ mod tests {
         assert_eq!(resolve_llama_server(&fork, &configured), None);
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn native_embed_dir_resolves_under_models() {
+        assert_eq!(
+            native_embed_dir(Path::new("/tmp/models")),
+            PathBuf::from("/tmp/models/bge-m3")
+        );
     }
 
     #[test]
