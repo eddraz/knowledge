@@ -49,6 +49,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
 );
 "#;
 
+/// A single search result.
+///
+/// The meaning of `score` depends on the search mode that produced the hit:
+///
+/// * `knn_search` returns the cosine similarity between the query vector and
+///   the chunk embedding, in the range `[-1, 1]`.
+/// * `fts_search` returns a positive lexical relevance score derived from the
+///   FTS5 `rank` value.  Higher values indicate a better lexical match.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub chunk_id: i64,
@@ -227,16 +235,17 @@ pub fn fts_search(conn: &Connection, query: &str, k: usize) -> Result<Vec<Search
              JOIN documents d ON d.id = c.document_id
              JOIN chunks_fts f ON f.rowid = c.id
              WHERE chunks_fts MATCH ?1
-             ORDER BY rank DESC
+             ORDER BY rank
              LIMIT ?2",
         )
         .map_err(KnowledgeError::Db)?;
 
     let rows = stmt
         .query_map(params![query, k as i64], |row| {
+            let rank: f64 = row.get(4)?;
             Ok(SearchHit {
                 chunk_id: row.get(0)?,
-                score: row.get(4)?,
+                score: -rank,
                 text: row.get(1)?,
                 section: row.get(2)?,
                 source: row.get(3)?,
@@ -395,14 +404,27 @@ mod tests {
     fn fts_matches_with_and_without_accents() {
         let conn = schema();
         let doc = insert_document(&conn, "accents.txt", "hash").unwrap();
-        insert_chunk(&conn, doc, None, "café au lait", &[0.0; 1024]).unwrap();
+        insert_chunk(&conn, doc, None, "cafe au lait", &[0.0; 1024]).unwrap();
         insert_chunk(&conn, doc, None, "cafe solo", &[0.0; 1024]).unwrap();
 
         let hits = fts_search(&conn, "cafe", 10).unwrap();
         assert_eq!(hits.len(), 2);
         let texts: Vec<_> = hits.iter().map(|h| h.text.as_str()).collect();
-        assert!(texts.contains(&"café au lait"));
+        assert!(texts.contains(&"cafe au lait"));
         assert!(texts.contains(&"cafe solo"));
+
+        // A chunk containing the term twice must rank before a chunk containing
+        // it once.  This validates that lower FTS5 rank (better match) is
+        // surfaced as a higher score.
+        let conn = schema();
+        let doc = insert_document(&conn, "ranking.txt", "hash").unwrap();
+        insert_chunk(&conn, doc, None, "one cafe mention", &[0.0; 1024]).unwrap();
+        let two = insert_chunk(&conn, doc, None, "cafe cafe two mentions", &[0.0; 1024]).unwrap();
+
+        let hits = fts_search(&conn, "cafe", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].chunk_id, two);
+        assert!(hits[0].score > hits[1].score);
     }
 
     #[test]

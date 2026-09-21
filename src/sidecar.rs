@@ -16,6 +16,8 @@ pub enum SidecarRole {
 
 #[derive(Debug)]
 pub struct SidecarHandle {
+    /// Base URL of the sidecar; exposed for diagnostics and future commands.
+    #[allow(dead_code)]
     pub base_url: String,
     pub child: Option<Child>,
 }
