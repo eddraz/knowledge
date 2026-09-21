@@ -93,3 +93,11 @@ README: install, model paths config, usage examples, architecture diagram.
 - E2E: correo determinista con --owner (xxx@gmail.com ✓); --all demuestra el fallo sin filtro;
   --meta genera título/keywords y el chunk meta rankea primero para "de qué trata" (0.357).
 - Owner: determinista (MemPalace-validado): --owner gana, fallback _shared; LLM jamás asigna scope.
+
+## Slice v3 — bootstrap automático + endurecimiento E2E (2026-09-21)
+
+### [x] v3.1 Bootstrap primera ejecución: clona fork model/K2Horizon en ~/apps, compila, descarga modelos (curl .part+rename)
+### [x] v3.2 knowledge setup + ensure_ready en add/ask/search; resolución fork > configured > install
+### [x] v3.3 E2E HOME virgen: 7m17s clone+build+descarga 1GB + add/ask operativos
+### [x] v3.4 Fixes: probe_health (todo fallo de transporte => spawn), owner Option (sin flag = todo), temperature 0.2 (mató la alucinación)
+- [x] commit: 1868380 (bootstrap, 45 tests) + fix commit final
