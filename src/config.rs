@@ -186,6 +186,14 @@ fn env_parse<T: FromStr>(name: &str) -> Result<Option<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serializes tests that mutate process env vars; parallel tests reading
+    /// `Config::load()` would otherwise race on `KNOWLEDGE_APPS_DIR`.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn from_parts_honours_values() {
@@ -267,6 +275,8 @@ mod tests {
 
     #[test]
     fn apps_dir_defaults_to_home_apps() {
+        let _guard = env_lock();
+        std::env::remove_var("KNOWLEDGE_APPS_DIR");
         let cfg = Config::load().unwrap();
         let expected = dirs::home_dir().unwrap().join("apps");
         assert_eq!(cfg.apps_dir, expected);
@@ -274,6 +284,7 @@ mod tests {
 
     #[test]
     fn apps_dir_env_override() {
+        let _guard = env_lock();
         std::env::set_var("KNOWLEDGE_APPS_DIR", "/tmp/custom-apps");
         let cfg = Config::load().unwrap();
         std::env::remove_var("KNOWLEDGE_APPS_DIR");
