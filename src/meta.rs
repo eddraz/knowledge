@@ -1,6 +1,9 @@
 use reqwest::Client;
 use serde_json::Value;
 
+#[cfg(feature = "native")]
+use crate::{bootstrap, config::Config, native};
+
 /// Metadata extracted from a document, used for the summary chunk and listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocMeta {
@@ -110,6 +113,22 @@ pub async fn generate(
         "Generate a concise title, one-sentence description, and relevant keywords for the following document:\n\n{truncated}"
     );
 
+    #[cfg(feature = "native")]
+    let _ = (http, gen_base_url, model);
+
+    #[cfg(feature = "native")]
+    let raw = {
+        let cfg = Config::load().ok()?;
+        let model_path = cfg.gen_model_path();
+        let tokenizer_path =
+            bootstrap::ensure_registry_file(&cfg.models_dir, native::DEFAULT_TOKENIZER_NAME, false)
+                .ok()?;
+        native::generate(&model_path, &tokenizer_path, system, &user, 512)
+            .map(|(answer, _stats)| answer)
+            .ok()?
+    };
+
+    #[cfg(not(feature = "native"))]
     let raw = crate::llm::generate(http, gen_base_url, model, system, &user, 512)
         .await
         .ok()?;

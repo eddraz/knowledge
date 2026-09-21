@@ -163,9 +163,14 @@ async fn cmd_add(
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
 
     let meta = if meta_flag {
+        // With the `native` feature, metadata generation runs in-process via
+        // candle and no generator sidecar is spawned at all.
+        #[cfg(not(feature = "native"))]
         let _gen_sidecar = sidecar::acquire(cfg, SidecarRole::Generator)
             .await
             .map_err(map_err)?;
+        #[cfg(feature = "native")]
+        let _gen_sidecar = ();
         let generated = meta::generate(&http, &cfg.gen_base_url(), &cfg.gen_model, &text).await;
         let fallback = DocMeta {
             title: source_title(path),

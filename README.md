@@ -61,12 +61,21 @@ knowledge status                # config + db summary
   - hybrid: Reciprocal Rank Fusion over both ranked lists.
 - **Grounding**: numbered context excerpts, instructions to answer only from
   context and cite excerpt numbers, plus a retrieval score gate.
+- **Native generation (`--features native`)**: when built with the `native`
+  feature, `ask` answers and `add --meta` metadata extraction run in-process
+  via candle against the quantized LFM2.5 GGUF model. Embeddings always run
+  through the bge-m3 sidecar, so only the generator sidecar is skipped. The
+  trade-off is convenience (no generator sidecar startup) vs. raw decode speed:
+  candle CPU decoding is slower than the llama.cpp generator sidecar used by
+  the default build.
 
 ## Development
 
 ```bash
-cargo test    # 28 unit tests (no sidecars required)
+cargo test                     # 45 unit tests (no sidecars required)
+cargo test --features native   # 46 unit tests, including candle in-process generation
 cargo run -- status
+cargo build --release --features native
 ```
 
 Task history lives in `odd/tasks/knowledge-base-rag.md`.

@@ -4,9 +4,12 @@ use rusqlite::Connection;
 use crate::config::Config;
 use crate::db::SearchHit;
 use crate::error::{KnowledgeError, Result};
-use crate::llm::generate;
 use crate::search::{run_search, SearchMode};
+
+#[cfg(not(feature = "native"))]
 use crate::sidecar::{acquire, SidecarRole};
+#[cfg(feature = "native")]
+use crate::{bootstrap, native};
 
 /// Build the system and user prompts for a grounded Q&A turn.
 ///
@@ -73,16 +76,32 @@ pub async fn ask(
     }
 
     let (system, user) = build_prompt(question, &hits, 1200);
-    let _handle = acquire(cfg, SidecarRole::Generator).await?;
-    let answer = generate(
-        http,
-        &cfg.gen_base_url(),
-        &cfg.gen_model,
-        &system,
-        &user,
-        512,
-    )
-    .await?;
+
+    #[cfg(feature = "native")]
+    let answer = {
+        let model_path = cfg.gen_model_path();
+        let tokenizer_path = bootstrap::ensure_registry_file(
+            &cfg.models_dir,
+            native::DEFAULT_TOKENIZER_NAME,
+            false,
+        )?;
+        let (answer, _stats) = native::generate(&model_path, &tokenizer_path, &system, &user, 512)?;
+        answer
+    };
+
+    #[cfg(not(feature = "native"))]
+    let answer = {
+        let _handle = acquire(cfg, SidecarRole::Generator).await?;
+        crate::llm::generate(
+            http,
+            &cfg.gen_base_url(),
+            &cfg.gen_model,
+            &system,
+            &user,
+            512,
+        )
+        .await?
+    };
 
     Ok((answer, hits))
 }

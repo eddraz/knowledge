@@ -15,5 +15,7 @@ pub mod error;
 pub mod ingest;
 pub mod llm;
 pub mod meta;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod search;
 pub mod sidecar;
