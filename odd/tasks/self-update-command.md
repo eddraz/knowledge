@@ -52,3 +52,18 @@ README usage block + prose documented. Folded into the same work-unit commit a79
 warning in main.rs:307, untouched by this diff. Pending review: native review candidate
 a791e7d under RDD switch.
 - [x] commit: docs update command (evidence: folded into a791e7d)
+
+### PENDING: native review (RDD) — confirmed controller defect
+Evidence across two sessions (gentle-ai 2.8.2, RDD on global, authority pristine, 0 lineages):
+- Session 1: committed-range START (baseRef master + committedOnly) rejected x2
+  (candidate-owner-preparation-failed, lineage_created false). Ordinary START on clean tree:
+  blocked with declared transition `collect select_base_ref` (empty_candidate_base_ref_required)
+  whose capture requires a lineageId no START issues. Unsatisfiable loop.
+- Session 2: inspect ready, offered exact review.start route (workspace projection, doc-only
+  delta odd/tasks/self-update-command.md, lineage review-087716f60e0ac17c pre-bound). Facade
+  START with {"mode":"ordinary"} -> candidate-owner-preparation-failed again, no lineage.
+- `gentle-ai review inspect-candidate` inapplicable (requires frozen candidate / lineage).
+Conclusion: every START variant is rejected at candidate-owner preparation before lineage
+creation; facade exposes no cause. Candidate left unreviewed by native review due to native
+unavailability (not by explicit user disposition). Independent verification (gentle-ai-verify)
+passed for the code commits. Worth an upstream defect report with this evidence.
