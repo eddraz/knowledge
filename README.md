@@ -69,17 +69,35 @@ knowledge status                # config + db summary
   context and cite excerpt numbers, plus a retrieval score gate.
 - **Native generation (`--features native`)**: when built with the `native`
   feature, `ask` answers and `add --meta` metadata extraction run in-process
-  via candle against the quantized LFM2.5 GGUF model. Embeddings always run
-  through the bge-m3 sidecar, so only the generator sidecar is skipped. The
-  trade-off is convenience (no generator sidecar startup) vs. raw decode speed:
-  candle CPU decoding is slower than the llama.cpp generator sidecar used by
-  the default build.
+  via candle against the quantized LFM2.5 GGUF model. Embeddings also default to
+  in-process candle bge-m3 (see "Native embeddings" below); set
+  `KNOWLEDGE_EMBEDDER=sidecar` to keep using the embedding sidecar. The
+  trade-off is convenience (no sidecar startup for generation or embeddings)
+  vs. raw speed: candle CPU decoding is slower than the llama.cpp sidecar used
+  by the default build.
+
+## Native embeddings (`--features native`)
+
+When the binary is built with `--features native`, embeddings run in-process via
+`candle` against the official BAAI bge-m3 F32 checkpoint instead of the
+`llama-server --embedding` sidecar. Native embedding is the default under this
+feature; set `KNOWLEDGE_EMBEDDER=sidecar` to force the original sidecar path.
+
+On first use with the native embedder, bootstrap downloads ~2.3 GB of F32
+PyTorch weights as `pytorch_model.bin` (plus `config.json` and `tokenizer.json`)
+into `$KNOWLEDGE_MODELS_DIR/bge-m3/`. The sidecar-only GGUF
+(`bge-m3-Q8_0.gguf`) is not downloaded in native mode.
+
+Vectors produced by the native F32 model differ slightly from vectors produced
+by the Q8_0 sidecar (typical cosine drift ~0.001–0.01). This is expected and
+acceptable: the default `KNOWLEDGE_MIN_SCORE=0.35` gate has enough margin, and
+retrieval remains stable.
 
 ## Development
 
 ```bash
-cargo test                     # 45 unit tests (no sidecars required)
-cargo test --features native   # 46 unit tests, including candle in-process generation
+cargo test                     # 47 unit tests (no sidecars required)
+cargo test --features native   # 50 unit tests, including candle in-process generation
 cargo run -- status
 cargo build --release --features native
 ```

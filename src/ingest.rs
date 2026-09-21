@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 use crate::chunk::chunk_text;
 use crate::config::Config;
 use crate::db::{delete_document, insert_chunk, insert_document, update_document_meta};
+use crate::embed::embed_texts;
 use crate::error::{KnowledgeError, Result};
-use crate::llm::embed_texts;
 use crate::meta::DocMeta;
 
 const EMBED_BATCH: usize = 32;
@@ -136,10 +136,9 @@ pub async fn ingest(
     // Embed all chunk texts in batches.
     let chunk_texts: Vec<String> = chunks.iter().map(|(_, text)| text.clone()).collect();
     let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(chunk_texts.len());
-    let base_url = cfg.embed_base_url();
     for (start, end) in batch_ranges(chunk_texts.len(), EMBED_BATCH) {
         let batch = chunk_texts[start..end].to_vec();
-        let mut batch_embeddings = embed_texts(http, &base_url, &batch).await?;
+        let mut batch_embeddings = embed_texts(http, cfg, &batch).await?;
         embeddings.append(&mut batch_embeddings);
     }
 

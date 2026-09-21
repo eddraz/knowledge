@@ -2,6 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use crate::embed::{resolve_embedder_mode, EmbedderMode};
 use crate::error::{KnowledgeError, Result};
 
 const DEFAULT_EMBED_MODEL: &str = "bge-m3-Q8_0.gguf";
@@ -22,6 +23,7 @@ pub struct Config {
     pub top_k: usize,
     pub min_score: f32,
     pub request_timeout_secs: u64,
+    pub embedder_mode: EmbedderMode,
 }
 
 impl Config {
@@ -38,6 +40,12 @@ impl Config {
         let min_score = env_parse("KNOWLEDGE_MIN_SCORE")?.unwrap_or(0.35);
         let request_timeout_secs = env_parse("KNOWLEDGE_TIMEOUT_SECS")?.unwrap_or(120);
 
+        let embedder_env = std::env::var("KNOWLEDGE_EMBEDDER").ok();
+        #[cfg(feature = "native")]
+        let embedder_mode = resolve_embedder_mode(true, embedder_env.as_deref())?;
+        #[cfg(not(feature = "native"))]
+        let embedder_mode = resolve_embedder_mode(false, embedder_env.as_deref())?;
+
         Self::from_parts(
             db_path,
             llama_server_bin,
@@ -52,6 +60,7 @@ impl Config {
             min_score,
             request_timeout_secs,
             apps_dir,
+            embedder_mode,
         )
     }
 
@@ -70,6 +79,7 @@ impl Config {
         min_score: f32,
         request_timeout_secs: u64,
         apps_dir: impl AsRef<Path>,
+        embedder_mode: EmbedderMode,
     ) -> Result<Self> {
         Ok(Self {
             db_path: db_path.as_ref().to_path_buf(),
@@ -85,6 +95,7 @@ impl Config {
             top_k,
             min_score,
             request_timeout_secs,
+            embedder_mode,
         })
     }
 
@@ -94,6 +105,24 @@ impl Config {
 
     pub fn gen_model_path(&self) -> PathBuf {
         self.models_dir.join(&self.gen_model)
+    }
+
+    /// Directory holding the native candle bge-m3 files (config.json,
+    /// tokenizer.json, pytorch_model.bin).
+    pub fn native_embed_dir(&self) -> PathBuf {
+        self.models_dir.join("bge-m3")
+    }
+
+    pub fn native_embed_config_path(&self) -> PathBuf {
+        self.native_embed_dir().join("config.json")
+    }
+
+    pub fn native_embed_tokenizer_path(&self) -> PathBuf {
+        self.native_embed_dir().join("tokenizer.json")
+    }
+
+    pub fn native_embed_weights_path(&self) -> PathBuf {
+        self.native_embed_dir().join("pytorch_model.bin")
     }
 
     pub fn embed_base_url(&self) -> String {
@@ -173,6 +202,7 @@ mod tests {
             0.5,
             60,
             "/tmp/apps",
+            EmbedderMode::Sidecar,
         )
         .unwrap();
 
@@ -189,6 +219,7 @@ mod tests {
         assert_eq!(cfg.top_k, 7);
         assert_eq!(cfg.min_score, 0.5);
         assert_eq!(cfg.request_timeout_secs, 60);
+        assert_eq!(cfg.embedder_mode, EmbedderMode::Sidecar);
     }
 
     #[test]
@@ -207,6 +238,7 @@ mod tests {
             0.35,
             120,
             "/tmp/apps",
+            EmbedderMode::Native,
         )
         .unwrap();
 
@@ -217,6 +249,19 @@ mod tests {
         assert_eq!(cfg.gen_model_path(), PathBuf::from("/tmp/models/gen.gguf"));
         assert_eq!(cfg.embed_base_url(), "http://127.0.0.1:8098");
         assert_eq!(cfg.gen_base_url(), "http://127.0.0.1:8099");
+        assert_eq!(cfg.native_embed_dir(), PathBuf::from("/tmp/models/bge-m3"));
+        assert_eq!(
+            cfg.native_embed_config_path(),
+            PathBuf::from("/tmp/models/bge-m3/config.json")
+        );
+        assert_eq!(
+            cfg.native_embed_tokenizer_path(),
+            PathBuf::from("/tmp/models/bge-m3/tokenizer.json")
+        );
+        assert_eq!(
+            cfg.native_embed_weights_path(),
+            PathBuf::from("/tmp/models/bge-m3/pytorch_model.bin")
+        );
     }
 
     #[test]
