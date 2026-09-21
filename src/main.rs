@@ -11,15 +11,18 @@ mod db;
 mod error;
 mod ingest;
 mod llm;
+mod meta;
 mod search;
 mod sidecar;
 
 use std::io::Read;
+use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
 use crate::error::KnowledgeError;
+use crate::meta::DocMeta;
 
 #[derive(Parser)]
 #[command(
@@ -28,6 +31,14 @@ use crate::error::KnowledgeError;
     version
 )]
 struct Cli {
+    /// Owner namespace for searches and the default owner for new documents.
+    #[arg(long, global = true, default_value = "_shared")]
+    owner: String,
+
+    /// Disable owner filtering (search across all owners).
+    #[arg(long, global = true)]
+    all: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -35,7 +46,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Ingest a text/markdown file into the knowledge base ("-" reads stdin).
-    Add { path: String },
+    Add {
+        path: String,
+        /// Generate LLM metadata (title/description/keywords) for the document.
+        #[arg(long)]
+        meta: bool,
+    },
 
     /// Ask a question; answers strictly from ingested content.
     Ask { question: String },
@@ -57,6 +73,9 @@ enum Commands {
     /// Remove a document and all of its chunks.
     Rm { source: String },
 
+    /// Change the owner of a document.
+    Chown { source: String, owner: String },
+
     /// Show configuration and database status.
     Status,
 }
@@ -65,13 +84,21 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load().map_err(map_err)?;
+    let owner_string = cli.owner.clone();
+    let owner = if cli.all {
+        None
+    } else {
+        Some(owner_string.as_str())
+    };
+    let default_owner = owner_string.as_str();
 
     match cli.command {
-        Commands::Add { path } => cmd_add(&cfg, &path).await?,
-        Commands::Ask { question } => cmd_ask(&cfg, &question).await?,
-        Commands::Search { query, mode, k } => cmd_search(&cfg, &query, &mode, k).await?,
+        Commands::Add { path, meta } => cmd_add(&cfg, &path, default_owner, meta).await?,
+        Commands::Ask { question } => cmd_ask(&cfg, &question, owner).await?,
+        Commands::Search { query, mode, k } => cmd_search(&cfg, &query, &mode, k, owner).await?,
         Commands::List => cmd_list(&cfg)?,
         Commands::Rm { source } => cmd_rm(&cfg, &source)?,
+        Commands::Chown { source, owner } => cmd_chown(&cfg, &source, &owner)?,
         Commands::Status => cmd_status(&cfg)?,
     }
     Ok(())
@@ -99,24 +126,57 @@ fn source_name(path: &str) -> String {
     if path == "-" {
         return "stdin".to_string();
     }
-    std::path::Path::new(path)
+    Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())
 }
 
-async fn cmd_add(cfg: &Config, path: &str) -> anyhow::Result<()> {
+fn source_title(path: &str) -> String {
+    if path == "-" {
+        return "stdin".to_string();
+    }
+    Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+async fn cmd_add(cfg: &Config, path: &str, owner: &str, meta_flag: bool) -> anyhow::Result<()> {
     let text = read_input(path)?;
     let source = source_name(path);
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
 
-    // `ingest` only performs embeddings; make sure the embedding sidecar is up.
-    let _sidecar = sidecar::acquire(cfg, sidecar::SidecarRole::Embedding)
+    let meta = if meta_flag {
+        let _gen_sidecar = sidecar::acquire(cfg, sidecar::SidecarRole::Generator)
+            .await
+            .map_err(map_err)?;
+        let generated = meta::generate(&http, &cfg.gen_base_url(), &cfg.gen_model, &text).await;
+        let fallback = DocMeta {
+            title: source_title(path),
+            description: String::new(),
+            keywords: Vec::new(),
+        };
+        let meta = generated.unwrap_or(fallback);
+
+        let keywords = meta.keywords.join(", ");
+        if keywords.is_empty() {
+            println!("Metadata: {}", meta.title);
+        } else {
+            println!("Metadata: {} — {}", meta.title, keywords);
+        }
+        Some(meta)
+    } else {
+        None
+    };
+
+    // `ingest` performs embeddings; make sure the embedding sidecar is up.
+    let _embed_sidecar = sidecar::acquire(cfg, sidecar::SidecarRole::Embedding)
         .await
         .map_err(map_err)?;
 
     let mut conn = open_db(cfg)?;
-    let report = ingest::ingest(&http, cfg, &mut conn, &source, &text)
+    let report = ingest::ingest(&http, cfg, &mut conn, &source, &text, owner, meta)
         .await
         .map_err(map_err)?;
     println!(
@@ -126,11 +186,11 @@ async fn cmd_add(cfg: &Config, path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_ask(cfg: &Config, question: &str) -> anyhow::Result<()> {
+async fn cmd_ask(cfg: &Config, question: &str, owner: Option<&str>) -> anyhow::Result<()> {
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
     let conn = open_db(cfg)?;
 
-    match ask::ask(&http, cfg, &conn, question, cfg.top_k).await {
+    match ask::ask(&http, cfg, &conn, question, cfg.top_k, owner).await {
         Ok((answer, hits)) => {
             println!("{answer}\n");
             println!("Sources:");
@@ -148,11 +208,17 @@ async fn cmd_ask(cfg: &Config, question: &str) -> anyhow::Result<()> {
     }
 }
 
-async fn cmd_search(cfg: &Config, query: &str, mode: &str, k: usize) -> anyhow::Result<()> {
+async fn cmd_search(
+    cfg: &Config,
+    query: &str,
+    mode: &str,
+    k: usize,
+    owner: Option<&str>,
+) -> anyhow::Result<()> {
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
     let conn = open_db(cfg)?;
     let parsed = search::parse_mode(mode);
-    let hits = search::run_search(&http, cfg, &conn, query, parsed, k)
+    let hits = search::run_search(&http, cfg, &conn, query, parsed, k, owner)
         .await
         .map_err(map_err)?;
     if hits.is_empty() {
@@ -170,8 +236,23 @@ fn cmd_list(cfg: &Config) -> anyhow::Result<()> {
         println!("No documents ingested yet.");
         return Ok(());
     }
-    for (id, source, hash) in docs {
-        println!("{id}  {source}  {hash}");
+    for doc in docs {
+        let title_part = doc
+            .title
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("  [{t}]"))
+            .unwrap_or_default();
+        let keywords_part = doc
+            .keywords
+            .as_deref()
+            .filter(|k| !k.is_empty())
+            .map(|k| format!("  {k}"))
+            .unwrap_or_default();
+        println!(
+            "{}  {}  {}{}{}",
+            doc.id, doc.owner, doc.source, title_part, keywords_part
+        );
     }
     Ok(())
 }
@@ -180,6 +261,13 @@ fn cmd_rm(cfg: &Config, source: &str) -> anyhow::Result<()> {
     let conn = open_db(cfg)?;
     let removed = db::delete_document(&conn, source).map_err(map_err)?;
     println!("Removed {source}: {removed}");
+    Ok(())
+}
+
+fn cmd_chown(cfg: &Config, source: &str, owner: &str) -> anyhow::Result<()> {
+    let conn = open_db(cfg)?;
+    let changed = db::set_owner(&conn, source, owner).map_err(map_err)?;
+    println!("Chown {source} -> {owner}: {changed}");
     Ok(())
 }
 

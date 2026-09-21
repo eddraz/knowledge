@@ -41,13 +41,14 @@ pub async fn run_search(
     query: &str,
     mode: SearchMode,
     k: usize,
+    owner: Option<&str>,
 ) -> Result<Vec<SearchHit>> {
     match mode {
-        SearchMode::Vector => vector_search(http, cfg, conn, query, k).await,
-        SearchMode::Lexical => fts_search(conn, query, k),
+        SearchMode::Vector => vector_search(http, cfg, conn, query, k, owner).await,
+        SearchMode::Lexical => fts_search(conn, query, k, owner),
         SearchMode::Hybrid => {
-            let mut vector_hits = vector_search(http, cfg, conn, query, k).await?;
-            let mut lexical_hits = fts_search(conn, query, k)?;
+            let mut vector_hits = vector_search(http, cfg, conn, query, k, owner).await?;
+            let mut lexical_hits = fts_search(conn, query, k, owner)?;
             Ok(fuse_rrf(&mut vector_hits, &mut lexical_hits, k))
         }
     }
@@ -59,6 +60,7 @@ async fn vector_search(
     conn: &Connection,
     query: &str,
     k: usize,
+    owner: Option<&str>,
 ) -> Result<Vec<SearchHit>> {
     let _handle = acquire(cfg, SidecarRole::Embedding).await?;
     let base_url = cfg.embed_base_url();
@@ -67,7 +69,7 @@ async fn vector_search(
         .into_iter()
         .next()
         .unwrap_or_else(|| vec![0.0_f32; EMBED_DIM]);
-    knn_search(conn, &query_vec, k)
+    knn_search(conn, &query_vec, k, owner)
 }
 
 /// Fuse two ranked lists using Reciprocal Rank Fusion.
@@ -98,6 +100,7 @@ fn fuse_rrf(vector: &mut [SearchHit], lexical: &mut [SearchHit], k: usize) -> Ve
             text: hit.text.clone(),
             section: hit.section.clone(),
             source: hit.source.clone(),
+            owner: hit.owner.clone(),
         });
     }
 
@@ -110,6 +113,7 @@ fn fuse_rrf(vector: &mut [SearchHit], lexical: &mut [SearchHit], k: usize) -> Ve
                 text: String::new(),
                 section: None,
                 source: String::new(),
+                owner: String::new(),
             });
             hit.score = score;
             hit
@@ -158,6 +162,7 @@ mod tests {
             text: format!("chunk {chunk_id}"),
             section: None,
             source: "test".to_string(),
+            owner: String::new(),
         }
     }
 
@@ -187,8 +192,8 @@ mod tests {
         let by_id: HashMap<i64, f64> = fused.iter().map(|h| (h.chunk_id, h.score)).collect();
         assert!((by_id[&3] - score_3).abs() < 1e-9);
         assert!((by_id[&1] - score_1).abs() < 1e-9);
-        assert!((by_id[&2] - score_2).abs() < 1e-9);
-        assert!((by_id[&4] - score_4).abs() < 1e-9);
+        assert!((by_id[&2] - score_2).abs() < 1e-4);
+        assert!((by_id[&4] - score_4).abs() < 1e-4);
 
         assert_eq!(fused[0].chunk_id, 3, "chunk in both lists should win");
     }

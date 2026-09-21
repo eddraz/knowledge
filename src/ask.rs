@@ -63,8 +63,9 @@ pub async fn ask(
     conn: &Connection,
     question: &str,
     k: usize,
+    owner: Option<&str>,
 ) -> Result<(String, Vec<SearchHit>)> {
-    let hits = run_search(http, cfg, conn, question, SearchMode::Vector, k).await?;
+    let hits = run_search(http, cfg, conn, question, SearchMode::Vector, k, owner).await?;
 
     let best = hits.first().map(|h| h.score as f32);
     if !passes_gate(best, cfg.min_score) {
@@ -97,6 +98,7 @@ mod tests {
             text: text.to_string(),
             section: section.map(String::from),
             source: source.to_string(),
+            owner: String::new(),
         }
     }
 
@@ -130,6 +132,7 @@ mod tests {
     fn passes_gate_boundary() {
         assert!(passes_gate(Some(0.35), 0.35));
         assert!(passes_gate(Some(0.36), 0.35));
+        assert!(!passes_gate(Some(0.34), 0.35));
         assert!(!passes_gate(Some(0.34), 0.35));
         assert!(!passes_gate(None, 0.35));
     }
