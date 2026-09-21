@@ -5,6 +5,7 @@
 //! from retrieved content using a local LFM2.5 generator sidecar.
 
 mod ask;
+mod bootstrap;
 mod chunk;
 mod config;
 mod db;
@@ -31,6 +32,10 @@ use crate::meta::DocMeta;
     version
 )]
 struct Cli {
+    /// Print bootstrap progress even when nothing needs to be installed.
+    #[arg(long, global = true)]
+    verbose: bool,
+
     /// Owner namespace for searches and the default owner for new documents.
     #[arg(long, global = true, default_value = "_shared")]
     owner: String,
@@ -78,12 +83,16 @@ enum Commands {
 
     /// Show configuration and database status.
     Status,
+
+    /// Run first-run bootstrap manually and print resolution summary.
+    Setup,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let cfg = Config::load().map_err(map_err)?;
+    let mut cfg = Config::load().map_err(map_err)?;
+    let verbose = cli.verbose;
     let owner_string = cli.owner.clone();
     let owner = if cli.all {
         None
@@ -93,13 +102,18 @@ async fn main() -> anyhow::Result<()> {
     let default_owner = owner_string.as_str();
 
     match cli.command {
-        Commands::Add { path, meta } => cmd_add(&cfg, &path, default_owner, meta).await?,
-        Commands::Ask { question } => cmd_ask(&cfg, &question, owner).await?,
-        Commands::Search { query, mode, k } => cmd_search(&cfg, &query, &mode, k, owner).await?,
+        Commands::Add { path, meta } => {
+            cmd_add(&mut cfg, &path, default_owner, meta, verbose).await?
+        }
+        Commands::Ask { question } => cmd_ask(&mut cfg, &question, owner, verbose).await?,
+        Commands::Search { query, mode, k } => {
+            cmd_search(&mut cfg, &query, &mode, k, owner, verbose).await?
+        }
         Commands::List => cmd_list(&cfg)?,
         Commands::Rm { source } => cmd_rm(&cfg, &source)?,
         Commands::Chown { source, owner } => cmd_chown(&cfg, &source, &owner)?,
         Commands::Status => cmd_status(&cfg)?,
+        Commands::Setup => cmd_setup(&mut cfg)?,
     }
     Ok(())
 }
@@ -142,7 +156,14 @@ fn source_title(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-async fn cmd_add(cfg: &Config, path: &str, owner: &str, meta_flag: bool) -> anyhow::Result<()> {
+async fn cmd_add(
+    cfg: &mut Config,
+    path: &str,
+    owner: &str,
+    meta_flag: bool,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    bootstrap::ensure_ready(cfg, verbose).map_err(map_err)?;
     let text = read_input(path)?;
     let source = source_name(path);
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
@@ -186,7 +207,13 @@ async fn cmd_add(cfg: &Config, path: &str, owner: &str, meta_flag: bool) -> anyh
     Ok(())
 }
 
-async fn cmd_ask(cfg: &Config, question: &str, owner: Option<&str>) -> anyhow::Result<()> {
+async fn cmd_ask(
+    cfg: &mut Config,
+    question: &str,
+    owner: Option<&str>,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    bootstrap::ensure_ready(cfg, verbose).map_err(map_err)?;
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
     let conn = open_db(cfg)?;
 
@@ -209,12 +236,14 @@ async fn cmd_ask(cfg: &Config, question: &str, owner: Option<&str>) -> anyhow::R
 }
 
 async fn cmd_search(
-    cfg: &Config,
+    cfg: &mut Config,
     query: &str,
     mode: &str,
     k: usize,
     owner: Option<&str>,
+    verbose: bool,
 ) -> anyhow::Result<()> {
+    bootstrap::ensure_ready(cfg, verbose).map_err(map_err)?;
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
     let conn = open_db(cfg)?;
     let parsed = search::parse_mode(mode);
@@ -302,6 +331,12 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
         cfg.gen_model,
         cfg.gen_model_path().exists()
     );
+    let fork_path = bootstrap::fork_bin_path(&cfg.apps_dir);
+    println!(
+        "fork build: {} (exists: {})",
+        fork_path.display(),
+        fork_path.exists()
+    );
     println!(
         "llama-server: {} (exists: {})",
         cfg.llama_server_bin.display(),
@@ -315,5 +350,13 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
         "retrieval: top_k = {}, min_score = {}",
         cfg.top_k, cfg.min_score
     );
+    Ok(())
+}
+
+fn cmd_setup(cfg: &mut Config) -> anyhow::Result<()> {
+    bootstrap::ensure_ready(cfg, true).map_err(map_err)?;
+    println!("llama-server: {}", cfg.llama_server_bin.display());
+    println!("embed model: {}", cfg.embed_model_path().display());
+    println!("gen model: {}", cfg.gen_model_path().display());
     Ok(())
 }
