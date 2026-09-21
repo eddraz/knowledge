@@ -6,6 +6,7 @@ use crate::error::{KnowledgeError, Result};
 
 const DEFAULT_EMBED_MODEL: &str = "bge-m3-Q8_0.gguf";
 const DEFAULT_GEN_MODEL: &str = "LFM2.5-230M-F16.gguf";
+const DEFAULT_EMBED_PORT: u16 = 28488;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -32,7 +33,7 @@ impl Config {
         let models_dir = env_path("KNOWLEDGE_MODELS_DIR").unwrap_or_else(default_models_dir);
         let apps_dir = env_path("KNOWLEDGE_APPS_DIR").unwrap_or_else(default_apps_dir);
 
-        let embed_port = env_parse("KNOWLEDGE_EMBED_PORT")?.unwrap_or(8098);
+        let embed_port = env_parse("KNOWLEDGE_EMBED_PORT")?.unwrap_or(DEFAULT_EMBED_PORT);
         let gen_port = env_parse("KNOWLEDGE_GEN_PORT")?.unwrap_or(8099);
         let top_k = env_parse("KNOWLEDGE_TOP_K")?.unwrap_or(5);
         let min_score = env_parse("KNOWLEDGE_MIN_SCORE")?.unwrap_or(0.35);
@@ -199,7 +200,7 @@ mod tests {
             "/tmp/models",
             "embed.gguf",
             "gen.gguf",
-            8098,
+            28488,
             8099,
             600,
             90,
@@ -215,7 +216,7 @@ mod tests {
             PathBuf::from("/tmp/models/embed.gguf")
         );
         assert_eq!(cfg.gen_model_path(), PathBuf::from("/tmp/models/gen.gguf"));
-        assert_eq!(cfg.embed_base_url(), "http://127.0.0.1:8098");
+        assert_eq!(cfg.embed_base_url(), "http://127.0.0.1:28488");
         assert_eq!(cfg.gen_base_url(), "http://127.0.0.1:8099");
     }
 

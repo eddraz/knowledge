@@ -49,7 +49,7 @@ knowledge update                # update the CLI (cargo install or GitHub Releas
 | `KNOWLEDGE_DB` | `~/.local/share/knowledge/knowledge.db` | SQLite database path |
 | `KNOWLEDGE_LLAMA_SERVER` | `~/.local/bin/llama-server` | sidecar binary |
 | `KNOWLEDGE_MODELS_DIR` | `~/models` | GGUF models directory |
-| `KNOWLEDGE_EMBED_PORT` | `8098` | embeddings sidecar port |
+| `KNOWLEDGE_EMBED_PORT` | `28488` | embeddings sidecar port |
 | `KNOWLEDGE_GEN_PORT` | `8099` | generator sidecar port |
 | `KNOWLEDGE_TOP_K` | `5` | chunks retrieved per query |
 | `KNOWLEDGE_MIN_SCORE` | `0.35` | minimum cosine to trust retrieval |
