@@ -4,7 +4,7 @@ use reqwest::Client;
 use rusqlite::Connection;
 
 use crate::config::Config;
-use crate::db::{fts_search, knn_search, SearchHit};
+use crate::db::{attach_context, fts_search, knn_search, SearchHit, SearchHitContext};
 use crate::embed::{embed_texts, EmbedderMode};
 use crate::error::Result;
 use crate::llm::EMBED_DIM;
@@ -53,6 +53,23 @@ pub async fn run_search(
             Ok(fuse_rrf(&mut vector_hits, &mut lexical_hits, k))
         }
     }
+}
+
+/// Run a search and enrich each hit with up to `window` adjacent chunks
+/// (`N-1`, `N+1`, ...) from the same document.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_search_with_context(
+    http: &Client,
+    cfg: &Config,
+    conn: &Connection,
+    query: &str,
+    mode: SearchMode,
+    k: usize,
+    owner: Option<&str>,
+    window: usize,
+) -> Result<Vec<SearchHitContext>> {
+    let hits = run_search(http, cfg, conn, query, mode, k, owner).await?;
+    attach_context(conn, hits, window)
 }
 
 async fn vector_search(
@@ -155,9 +172,99 @@ pub fn display(hits: &[SearchHit]) {
     }
 }
 
+fn format_offset_label(offset: isize) -> String {
+    if offset < 0 {
+        format!("[N{offset}]")
+    } else if offset > 0 {
+        format!("[N+{offset}]")
+    } else {
+        "[N]".to_string()
+    }
+}
+
+fn push_chunk_block(
+    out: &mut String,
+    label: &str,
+    source: &str,
+    section: Option<&str>,
+    text: &str,
+    is_hit: bool,
+) {
+    let section = section.unwrap_or("");
+    let marker = if is_hit { " [hit]" } else { "" };
+    out.push_str(&format!("  {label} ({source}::{section}){marker}\n"));
+    if text.is_empty() {
+        out.push('\n');
+        return;
+    }
+    for line in text.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+}
+
+/// Format search hits together with their adjacent context chunks (`N-1`, `N`, `N+1`).
+pub fn format_results_with_context(results: &[SearchHitContext]) -> String {
+    let mut out = String::new();
+    for (idx, item) in results.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        let section = item.hit.section.as_deref().unwrap_or("");
+        out.push_str(&format!(
+            "[{}] {:.4}  {}::{}\n",
+            idx + 1,
+            item.hit.score,
+            item.hit.source,
+            section
+        ));
+
+        for prev in &item.before {
+            let label = format_offset_label(prev.offset);
+            push_chunk_block(
+                &mut out,
+                &label,
+                &prev.source,
+                prev.section.as_deref(),
+                &prev.text,
+                false,
+            );
+        }
+
+        push_chunk_block(
+            &mut out,
+            "[N]",
+            &item.hit.source,
+            item.hit.section.as_deref(),
+            &item.hit.text,
+            true,
+        );
+
+        for next in &item.after {
+            let label = format_offset_label(next.offset);
+            push_chunk_block(
+                &mut out,
+                &label,
+                &next.source,
+                next.section.as_deref(),
+                &next.text,
+                false,
+            );
+        }
+    }
+    out
+}
+
+/// Print search hits together with their adjacent context chunks (`N-1`, `N`, `N+1`).
+pub fn display_with_context(results: &[SearchHitContext]) {
+    print!("{}", format_results_with_context(results));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{insert_chunk, insert_document, open, AdjacentChunk};
 
     fn hit(chunk_id: i64, score: f64) -> SearchHit {
         SearchHit {
@@ -208,5 +315,110 @@ mod tests {
         let lexical = vec![hit(3, 1.0), hit(4, 0.9)];
         let fused = fuse_rrf(&mut vector.clone(), &mut lexical.clone(), 2);
         assert_eq!(fused.len(), 2);
+    }
+
+    #[test]
+    fn format_results_with_context_renders_labels_and_full_text() {
+        let results = vec![SearchHitContext {
+            hit: SearchHit {
+                chunk_id: 2,
+                score: 0.8123,
+                text: "Target line 1\nTarget line 2".to_string(),
+                section: Some("Especies".to_string()),
+                source: "doc.md".to_string(),
+                owner: "_shared".to_string(),
+            },
+            document_id: 1,
+            before: vec![AdjacentChunk {
+                chunk_id: 1,
+                document_id: 1,
+                offset: -1,
+                text: "Previous context".to_string(),
+                section: Some("Historia".to_string()),
+                source: "doc.md".to_string(),
+                owner: "_shared".to_string(),
+            }],
+            after: vec![AdjacentChunk {
+                chunk_id: 3,
+                document_id: 1,
+                offset: 1,
+                text: "Next context".to_string(),
+                section: Some("Horarios".to_string()),
+                source: "doc.md".to_string(),
+                owner: "_shared".to_string(),
+            }],
+        }];
+
+        let rendered = format_results_with_context(&results);
+        assert!(rendered.contains("[1] 0.8123  doc.md::Especies"));
+        assert!(rendered.contains("  [N-1] (doc.md::Historia)\n    Previous context\n"));
+        assert!(rendered
+            .contains("  [N] (doc.md::Especies) [hit]\n    Target line 1\n    Target line 2\n"));
+        assert!(rendered.contains("  [N+1] (doc.md::Horarios)\n    Next context\n"));
+    }
+
+    #[tokio::test]
+    async fn run_search_with_context_lexical_returns_adjacent_chunks() {
+        let pid = std::process::id();
+        let path = std::env::temp_dir().join(format!("knowledge_search_ctx_test_{pid}.db"));
+        let _ = std::fs::remove_file(&path);
+
+        let conn = open(&path).unwrap();
+        let doc1 = insert_document(&conn, "acuario.md", "h1", "_shared").unwrap();
+        let c1 =
+            insert_chunk(&conn, doc1, Some("Historia"), "Abrio en 1987", &[0.0; 1024]).unwrap();
+        let c2 = insert_chunk(
+            &conn,
+            doc1,
+            Some("Especies"),
+            "Pinguinos de Magallanes",
+            &[0.0; 1024],
+        )
+        .unwrap();
+        let c3 = insert_chunk(
+            &conn,
+            doc1,
+            Some("Horarios"),
+            "Atiende de martes a domingo",
+            &[0.0; 1024],
+        )
+        .unwrap();
+
+        let doc2 = insert_document(&conn, "otro.md", "h2", "_shared").unwrap();
+        insert_chunk(
+            &conn,
+            doc2,
+            Some("Otro"),
+            "Texto no relacionado",
+            &[0.0; 1024],
+        )
+        .unwrap();
+
+        let cfg = Config::load().unwrap();
+        let http = Client::new();
+        let results = run_search_with_context(
+            &http,
+            &cfg,
+            &conn,
+            "pinguinos",
+            SearchMode::Lexical,
+            5,
+            None,
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].hit.chunk_id, c2);
+        assert_eq!(results[0].before.len(), 1);
+        assert_eq!(results[0].before[0].chunk_id, c1);
+        assert_eq!(results[0].before[0].offset, -1);
+        assert_eq!(results[0].after.len(), 1);
+        assert_eq!(results[0].after[0].chunk_id, c3);
+        assert_eq!(results[0].after[0].offset, 1);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 }

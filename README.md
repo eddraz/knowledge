@@ -65,8 +65,8 @@ with the quantized LFM2.5 GGUF.
 native-ask "question" --owner alice
 ```
 
-Flags: `question`, `--owner`, `-k` (default 5), `--max-tokens` (default 512),
-`--model`, `--tokenizer`, `--verbose`.
+Flags: `question`, `--owner`, `-k` (default 5), `-w` / `--window` (default 1),
+`--no-context`, `--max-tokens` (default 512), `--model`, `--tokenizer`, `--verbose`.
 
 ## Usage
 
@@ -77,9 +77,10 @@ knowledge add -t "nota" --name "mi-nota"  # ingest a string with a custom name
 knowledge add doc.md --meta               # LLM title/keywords extraction
 knowledge list                            # list documents
 knowledge owners                          # list owner namespaces
-knowledge search "pregunta parafraseada" --mode vector   # semantic (default)
+knowledge search "pregunta parafraseada" --mode vector   # semantic (default, includes N-1/N+1)
 knowledge search "sensores" --mode lexical               # FTS5 BM25
 knowledge search "financiamiento" --mode hybrid          # RRF fusion
+knowledge search "sensores" --no-context                 # compact 1-line results (or --window 0)
 knowledge ask "¿Quién financia el Proyecto Aurora?"      # grounded answer + sources
 knowledge rm doc.md                       # remove document
 knowledge chown doc.md alice              # change document owner
@@ -104,6 +105,7 @@ knowledge setup                           # create/check data directory and conf
 | `KNOWLEDGE_GEN_PORT` | `8099` | generator sidecar port |
 | `KNOWLEDGE_TOP_K` | `5` | chunks retrieved per query |
 | `KNOWLEDGE_MIN_SCORE` | `0.35` | minimum cosine to trust retrieval |
+| `KNOWLEDGE_CONTEXT_WINDOW` | `1` | adjacent chunks (`N-1`, `N+1`) included per hit |
 | `KNOWLEDGE_TIMEOUT_SECS` | `120` | HTTP + sidecar health timeout |
 | `KNOWLEDGE_APPS_DIR` | `~/apps` | installed sidecar / app binaries directory |
 | `KNOWLEDGE_EMBEDDER` | `hybrid` on native builds / `sidecar` | embedding backend selector (`hybrid`, `native`, `sidecar`) |
@@ -158,8 +160,8 @@ retrieval remains stable.
 ## Development
 
 ```bash
-cargo test                     # 61 unit tests (no sidecars required)
-cargo test --features native   # 64 unit tests, including candle in-process generation
+cargo test                     # 72 unit tests (no sidecars required)
+cargo test --features native   # 76 unit tests, including candle in-process generation
 cargo run -- status
 cargo build --release --features native
 ```

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use knowledge::ask::{build_prompt, passes_gate};
+use knowledge::ask::{build_prompt_with_context, passes_gate};
 use knowledge::bootstrap;
 use knowledge::config::Config;
 use knowledge::db;
@@ -35,6 +35,14 @@ struct Args {
     /// Number of chunks to retrieve.
     #[arg(long, short = 'k', default_value = "5")]
     k: usize,
+
+    /// Number of adjacent chunks before and after each hit [default: 1, or KNOWLEDGE_CONTEXT_WINDOW].
+    #[arg(long, short = 'w')]
+    window: Option<usize>,
+
+    /// Omit adjacent context chunks (equivalent to --window 0).
+    #[arg(long)]
+    no_context: bool,
 
     /// Maximum number of tokens to generate.
     #[arg(long, default_value = "512")]
@@ -113,7 +121,14 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    let (system, user) = build_prompt(&args.question, &hits, 1200);
+    let window = if args.no_context {
+        0
+    } else {
+        args.window.unwrap_or(cfg.context_window)
+    };
+    let contextual = db::attach_context(&conn, hits, window)?;
+    let (system, user) = build_prompt_with_context(&args.question, &contextual, 1200);
+    let hits: Vec<db::SearchHit> = contextual.into_iter().map(|c| c.hit).collect();
 
     eprintln!("[native] generating...");
     let (answer, stats) = generate_with_loaded(
@@ -138,4 +153,23 @@ async fn run() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_window_and_no_context_flags() {
+        let default_args = Args::try_parse_from(["native-ask", "hola"]).unwrap();
+        assert_eq!(default_args.window, None);
+        assert!(!default_args.no_context);
+
+        let window_args = Args::try_parse_from(["native-ask", "hola", "--window", "2"]).unwrap();
+        assert_eq!(window_args.window, Some(2));
+        assert!(!window_args.no_context);
+
+        let no_ctx_args = Args::try_parse_from(["native-ask", "hola", "--no-context"]).unwrap();
+        assert!(no_ctx_args.no_context);
+    }
 }

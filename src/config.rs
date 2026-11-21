@@ -8,6 +8,7 @@ use crate::error::{KnowledgeError, Result};
 const DEFAULT_EMBED_MODEL: &str = "bge-m3-Q8_0.gguf";
 const DEFAULT_GEN_MODEL: &str = "LFM2.5-230M-F16.gguf";
 const DEFAULT_EMBED_PORT: u16 = 28488;
+const DEFAULT_CONTEXT_WINDOW: usize = 1;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -23,6 +24,7 @@ pub struct Config {
     pub chunk_overlap_chars: usize,
     pub top_k: usize,
     pub min_score: f32,
+    pub context_window: usize,
     pub request_timeout_secs: u64,
     pub embedder_mode: EmbedderMode,
 }
@@ -39,6 +41,8 @@ impl Config {
         let gen_port = env_parse("KNOWLEDGE_GEN_PORT")?.unwrap_or(8099);
         let top_k = env_parse("KNOWLEDGE_TOP_K")?.unwrap_or(5);
         let min_score = env_parse("KNOWLEDGE_MIN_SCORE")?.unwrap_or(0.35);
+        let context_window =
+            env_parse("KNOWLEDGE_CONTEXT_WINDOW")?.unwrap_or(DEFAULT_CONTEXT_WINDOW);
         let request_timeout_secs = env_parse("KNOWLEDGE_TIMEOUT_SECS")?.unwrap_or(120);
 
         let embedder_env = std::env::var("KNOWLEDGE_EMBEDDER").ok();
@@ -59,6 +63,7 @@ impl Config {
             90,
             top_k,
             min_score,
+            context_window,
             request_timeout_secs,
             apps_dir,
             embedder_mode,
@@ -78,6 +83,7 @@ impl Config {
         chunk_overlap_chars: usize,
         top_k: usize,
         min_score: f32,
+        context_window: usize,
         request_timeout_secs: u64,
         apps_dir: impl AsRef<Path>,
         embedder_mode: EmbedderMode,
@@ -95,6 +101,7 @@ impl Config {
             chunk_overlap_chars,
             top_k,
             min_score,
+            context_window,
             request_timeout_secs,
             embedder_mode,
         })
@@ -209,6 +216,7 @@ mod tests {
             10,
             7,
             0.5,
+            2,
             60,
             "/tmp/apps",
             EmbedderMode::Sidecar,
@@ -227,6 +235,7 @@ mod tests {
         assert_eq!(cfg.chunk_overlap_chars, 10);
         assert_eq!(cfg.top_k, 7);
         assert_eq!(cfg.min_score, 0.5);
+        assert_eq!(cfg.context_window, 2);
         assert_eq!(cfg.request_timeout_secs, 60);
         assert_eq!(cfg.embedder_mode, EmbedderMode::Sidecar);
     }
@@ -245,6 +254,7 @@ mod tests {
             90,
             5,
             0.35,
+            1,
             120,
             "/tmp/apps",
             EmbedderMode::Native,
@@ -289,5 +299,23 @@ mod tests {
         let cfg = Config::load().unwrap();
         std::env::remove_var("KNOWLEDGE_APPS_DIR");
         assert_eq!(cfg.apps_dir, PathBuf::from("/tmp/custom-apps"));
+    }
+
+    #[test]
+    fn context_window_defaults_to_one_and_honours_env_override() {
+        let _guard = env_lock();
+        std::env::remove_var("KNOWLEDGE_CONTEXT_WINDOW");
+        let cfg = Config::load().unwrap();
+        assert_eq!(cfg.context_window, 1);
+
+        std::env::set_var("KNOWLEDGE_CONTEXT_WINDOW", "0");
+        let cfg = Config::load().unwrap();
+        std::env::remove_var("KNOWLEDGE_CONTEXT_WINDOW");
+        assert_eq!(cfg.context_window, 0);
+
+        std::env::set_var("KNOWLEDGE_CONTEXT_WINDOW", "3");
+        let cfg = Config::load().unwrap();
+        std::env::remove_var("KNOWLEDGE_CONTEXT_WINDOW");
+        assert_eq!(cfg.context_window, 3);
     }
 }

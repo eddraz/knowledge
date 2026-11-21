@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::{Mutex, Once};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{KnowledgeError, Result};
 use crate::meta::DocMeta;
@@ -185,6 +185,27 @@ pub struct SearchHit {
     pub section: Option<String>,
     pub source: String,
     pub owner: String,
+}
+
+/// A chunk adjacent to a search hit within the same document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdjacentChunk {
+    pub chunk_id: i64,
+    pub document_id: i64,
+    pub offset: isize,
+    pub text: String,
+    pub section: Option<String>,
+    pub source: String,
+    pub owner: String,
+}
+
+/// A search hit enriched with its adjacent chunks (`N-1`, `N+1`, ...) from the same document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchHitContext {
+    pub hit: SearchHit,
+    pub document_id: i64,
+    pub before: Vec<AdjacentChunk>,
+    pub after: Vec<AdjacentChunk>,
 }
 
 /// Metadata stored for a document, as returned by `list_documents`.
@@ -583,6 +604,151 @@ pub fn set_owner(conn: &Connection, source: &str, owner: &str) -> Result<bool> {
     Ok(changed > 0)
 }
 
+#[derive(Clone, Copy)]
+enum NeighborDirection {
+    Before,
+    After,
+}
+
+fn query_neighbors(
+    conn: &Connection,
+    document_id: i64,
+    chunk_id: i64,
+    window: usize,
+    source: &str,
+    owner: &str,
+    direction: NeighborDirection,
+) -> Result<Vec<AdjacentChunk>> {
+    if window == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(window).unwrap_or(i64::MAX);
+    let sql = match direction {
+        NeighborDirection::Before => {
+            "SELECT id, section, text
+             FROM chunks
+             WHERE document_id = ?1 AND id < ?2
+             ORDER BY id DESC
+             LIMIT ?3"
+        }
+        NeighborDirection::After => {
+            "SELECT id, section, text
+             FROM chunks
+             WHERE document_id = ?1 AND id > ?2
+             ORDER BY id ASC
+             LIMIT ?3"
+        }
+    };
+
+    let mut stmt = conn.prepare_cached(sql).map_err(KnowledgeError::Db)?;
+    let mut raw: Vec<(i64, Option<String>, String)> = stmt
+        .query_map(params![document_id, chunk_id, limit], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(KnowledgeError::Db)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(KnowledgeError::Db)?;
+
+    if matches!(direction, NeighborDirection::Before) {
+        raw.reverse();
+    }
+
+    let len = raw.len();
+    let chunks = raw
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, section, text))| {
+            let offset = match direction {
+                NeighborDirection::Before => -((len - i) as isize),
+                NeighborDirection::After => (i + 1) as isize,
+            };
+            AdjacentChunk {
+                chunk_id: id,
+                document_id,
+                offset,
+                text,
+                section,
+                source: source.to_string(),
+                owner: owner.to_string(),
+            }
+        })
+        .collect();
+
+    Ok(chunks)
+}
+
+/// Fetch up to `window` adjacent chunks before (`N-1`, ...) and after
+/// (`N+1`, ...) `chunk_id` within the same document, ordered in document order.
+///
+/// Returns `(document_id, before, after)`. If `chunk_id` does not exist,
+/// returns `(0, Vec::new(), Vec::new())`.
+pub fn adjacent_chunks(
+    conn: &Connection,
+    chunk_id: i64,
+    window: usize,
+) -> Result<(i64, Vec<AdjacentChunk>, Vec<AdjacentChunk>)> {
+    let mut doc_stmt = conn
+        .prepare_cached(
+            "SELECT c.document_id, d.source, d.owner
+             FROM chunks c
+             JOIN documents d ON d.id = c.document_id
+             WHERE c.id = ?1",
+        )
+        .map_err(KnowledgeError::Db)?;
+
+    let doc_info: Option<(i64, String, String)> = doc_stmt
+        .query_row(params![chunk_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()
+        .map_err(KnowledgeError::Db)?;
+
+    let Some((document_id, source, owner)) = doc_info else {
+        return Ok((0, Vec::new(), Vec::new()));
+    };
+
+    let before = query_neighbors(
+        conn,
+        document_id,
+        chunk_id,
+        window,
+        &source,
+        &owner,
+        NeighborDirection::Before,
+    )?;
+    let after = query_neighbors(
+        conn,
+        document_id,
+        chunk_id,
+        window,
+        &source,
+        &owner,
+        NeighborDirection::After,
+    )?;
+
+    Ok((document_id, before, after))
+}
+
+/// Enrich search hits with up to `window` adjacent chunks before and after each
+/// hit within the same document, preserving hit rank order.
+pub fn attach_context(
+    conn: &Connection,
+    hits: Vec<SearchHit>,
+    window: usize,
+) -> Result<Vec<SearchHitContext>> {
+    hits.into_iter()
+        .map(|hit| {
+            let (document_id, before, after) = adjacent_chunks(conn, hit.chunk_id, window)?;
+            Ok(SearchHitContext {
+                hit,
+                document_id,
+                before,
+                after,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,5 +1104,127 @@ mod tests {
         assert_eq!(owners[2].owner, "bob");
         assert_eq!(owners[2].documents, 1);
         assert_eq!(owners[2].chunks, 0);
+    }
+
+    #[test]
+    fn adjacent_chunks_middle_hit_returns_prev_and_next() {
+        let conn = schema();
+        let doc = insert_document(&conn, "guide.md", "h1", "alice").unwrap();
+        let c1 = insert_chunk(&conn, doc, Some("S1"), "chunk one", &[0.0; 1024]).unwrap();
+        let c2 = insert_chunk(&conn, doc, Some("S2"), "chunk two", &[0.0; 1024]).unwrap();
+        let c3 = insert_chunk(&conn, doc, Some("S3"), "chunk three", &[0.0; 1024]).unwrap();
+        let c4 = insert_chunk(&conn, doc, Some("S4"), "chunk four", &[0.0; 1024]).unwrap();
+        let _c5 = insert_chunk(&conn, doc, Some("S5"), "chunk five", &[0.0; 1024]).unwrap();
+
+        let (doc_id, before, after) = adjacent_chunks(&conn, c3, 1).unwrap();
+        assert_eq!(doc_id, doc);
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].chunk_id, c2);
+        assert_eq!(before[0].offset, -1);
+        assert_eq!(before[0].text, "chunk two");
+        assert_eq!(before[0].section.as_deref(), Some("S2"));
+        assert_eq!(before[0].source, "guide.md");
+        assert_eq!(before[0].owner, "alice");
+
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].chunk_id, c4);
+        assert_eq!(after[0].offset, 1);
+        assert_eq!(after[0].text, "chunk four");
+        assert_eq!(after[0].section.as_deref(), Some("S4"));
+
+        // Window of 2 returns [N-2, N-1] and [N+1, N+2] in document order.
+        let (_, before2, after2) = adjacent_chunks(&conn, c3, 2).unwrap();
+        assert_eq!(
+            before2
+                .iter()
+                .map(|c| (c.chunk_id, c.offset))
+                .collect::<Vec<_>>(),
+            vec![(c1, -2), (c2, -1)]
+        );
+        assert_eq!(
+            after2
+                .iter()
+                .map(|c| (c.chunk_id, c.offset))
+                .collect::<Vec<_>>(),
+            vec![(c4, 1), (_c5, 2)]
+        );
+
+        // Window of 0 returns empty neighbors while preserving document_id.
+        let (doc0, before0, after0) = adjacent_chunks(&conn, c3, 0).unwrap();
+        assert_eq!(doc0, doc);
+        assert!(before0.is_empty());
+        assert!(after0.is_empty());
+    }
+
+    #[test]
+    fn adjacent_chunks_boundaries_never_cross_documents() {
+        let conn = schema();
+        let doc_a = insert_document(&conn, "a.md", "h1", "alice").unwrap();
+        let a1 = insert_chunk(&conn, doc_a, None, "a first", &[0.0; 1024]).unwrap();
+        let a2 = insert_chunk(&conn, doc_a, None, "a second", &[0.0; 1024]).unwrap();
+
+        let doc_b = insert_document(&conn, "b.md", "h2", "bob").unwrap();
+        let b1 = insert_chunk(&conn, doc_b, None, "b first", &[0.0; 1024]).unwrap();
+        let b2 = insert_chunk(&conn, doc_b, None, "b second", &[0.0; 1024]).unwrap();
+
+        // First chunk of doc A has no N-1, only N+1.
+        let (_, before, after) = adjacent_chunks(&conn, a1, 1).unwrap();
+        assert!(before.is_empty());
+        assert_eq!(
+            after.iter().map(|c| c.chunk_id).collect::<Vec<_>>(),
+            vec![a2]
+        );
+
+        // Last chunk of doc A must NOT leak into doc B.
+        let (_, before, after) = adjacent_chunks(&conn, a2, 1).unwrap();
+        assert_eq!(
+            before.iter().map(|c| c.chunk_id).collect::<Vec<_>>(),
+            vec![a1]
+        );
+        assert!(after.is_empty());
+
+        // First chunk of doc B must NOT leak back into doc A.
+        let (_, before, after) = adjacent_chunks(&conn, b1, 1).unwrap();
+        assert!(before.is_empty());
+        assert_eq!(
+            after.iter().map(|c| c.chunk_id).collect::<Vec<_>>(),
+            vec![b2]
+        );
+    }
+
+    #[test]
+    fn attach_context_enriches_hits_and_handles_missing_chunk_gracefully() {
+        let conn = schema();
+        let doc = insert_document(&conn, "vec.md", "h1", "_shared").unwrap();
+        let c1 = insert_chunk(&conn, doc, Some("Intro"), "before text", &unit_vector(1)).unwrap();
+        let c2 = insert_chunk(&conn, doc, Some("Core"), "match text", &unit_vector(0)).unwrap();
+        let c3 = insert_chunk(&conn, doc, Some("Outro"), "after text", &unit_vector(2)).unwrap();
+
+        let hits = knn_search(&conn, &unit_vector(0), 1, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].chunk_id, c2);
+
+        let enriched = attach_context(&conn, hits, 1).unwrap();
+        assert_eq!(enriched.len(), 1);
+        assert_eq!(enriched[0].document_id, doc);
+        assert_eq!(enriched[0].before.len(), 1);
+        assert_eq!(enriched[0].before[0].chunk_id, c1);
+        assert_eq!(enriched[0].after.len(), 1);
+        assert_eq!(enriched[0].after[0].chunk_id, c3);
+
+        // Missing chunk_id degrades gracefully without error.
+        let missing = vec![SearchHit {
+            chunk_id: 9999,
+            score: 0.5,
+            text: "ghost".to_string(),
+            section: None,
+            source: "ghost.md".to_string(),
+            owner: "_shared".to_string(),
+        }];
+        let enriched_missing = attach_context(&conn, missing, 1).unwrap();
+        assert_eq!(enriched_missing.len(), 1);
+        assert_eq!(enriched_missing[0].document_id, 0);
+        assert!(enriched_missing[0].before.is_empty());
+        assert!(enriched_missing[0].after.is_empty());
     }
 }

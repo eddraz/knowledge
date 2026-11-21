@@ -68,7 +68,15 @@ enum Commands {
     },
 
     /// Ask a question; answers strictly from ingested content.
-    Ask { question: String },
+    Ask {
+        question: String,
+        /// Number of adjacent chunks before and after each hit [default: 1, or KNOWLEDGE_CONTEXT_WINDOW].
+        #[arg(long, short = 'w')]
+        window: Option<usize>,
+        /// Omit adjacent context chunks (equivalent to --window 0).
+        #[arg(long)]
+        no_context: bool,
+    },
 
     /// Search the knowledge base without generating an answer.
     Search {
@@ -79,6 +87,12 @@ enum Commands {
         /// Maximum number of results.
         #[arg(long, short = 'k', default_value = "5")]
         k: usize,
+        /// Number of adjacent chunks before and after each hit [default: 1, or KNOWLEDGE_CONTEXT_WINDOW].
+        #[arg(long, short = 'w')]
+        window: Option<usize>,
+        /// Omit adjacent context chunks (equivalent to --window 0).
+        #[arg(long)]
+        no_context: bool,
     },
 
     /// List ingested documents.
@@ -131,9 +145,23 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Commands::Ask { question } => cmd_ask(&mut cfg, &question, owner, verbose).await?,
-        Commands::Search { query, mode, k } => {
-            cmd_search(&mut cfg, &query, &mode, k, owner, verbose).await?
+        Commands::Ask {
+            question,
+            window,
+            no_context,
+        } => {
+            cfg.context_window = resolve_window(window, no_context, cfg.context_window);
+            cmd_ask(&mut cfg, &question, owner, verbose).await?
+        }
+        Commands::Search {
+            query,
+            mode,
+            k,
+            window,
+            no_context,
+        } => {
+            let effective_window = resolve_window(window, no_context, cfg.context_window);
+            cmd_search(&mut cfg, &query, &mode, k, effective_window, owner, verbose).await?
         }
         Commands::List => cmd_list(&cfg)?,
         Commands::Owners => cmd_owners(&cfg)?,
@@ -144,6 +172,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Update => knowledge::update::cmd_update(verbose).map_err(map_err)?,
     }
     Ok(())
+}
+
+fn resolve_window(window: Option<usize>, no_context: bool, default: usize) -> usize {
+    if no_context {
+        0
+    } else {
+        window.unwrap_or(default)
+    }
 }
 
 fn map_err(e: KnowledgeError) -> anyhow::Error {
@@ -377,6 +413,7 @@ async fn cmd_search(
     query: &str,
     mode: &str,
     k: usize,
+    window: usize,
     owner: Option<&str>,
     verbose: bool,
 ) -> anyhow::Result<()> {
@@ -384,13 +421,25 @@ async fn cmd_search(
     let http = llm::http_client(cfg.request_timeout_secs).map_err(map_err)?;
     let conn = open_db(cfg)?;
     let parsed = search::parse_mode(mode);
-    let hits = search::run_search(&http, cfg, &conn, query, parsed, k, owner)
-        .await
-        .map_err(map_err)?;
-    if hits.is_empty() {
-        println!("No results.");
+    if window == 0 {
+        let hits = search::run_search(&http, cfg, &conn, query, parsed, k, owner)
+            .await
+            .map_err(map_err)?;
+        if hits.is_empty() {
+            println!("No results.");
+        } else {
+            search::display(&hits);
+        }
     } else {
-        search::display(&hits);
+        let results =
+            search::run_search_with_context(&http, cfg, &conn, query, parsed, k, owner, window)
+                .await
+                .map_err(map_err)?;
+        if results.is_empty() {
+            println!("No results.");
+        } else {
+            search::display_with_context(&results);
+        }
     }
     Ok(())
 }
@@ -554,8 +603,8 @@ async fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
         cfg.embed_port, cfg.gen_port
     );
     println!(
-        "retrieval: top_k = {}, min_score = {}",
-        cfg.top_k, cfg.min_score
+        "retrieval: top_k = {}, min_score = {}, context_window = {}",
+        cfg.top_k, cfg.min_score, cfg.context_window
     );
     Ok(())
 }
@@ -653,5 +702,51 @@ mod tests {
 
         let err_neither = resolve_ingest_input(None, None, None).unwrap_err();
         assert!(err_neither.to_string().contains("Nothing to ingest"));
+    }
+
+    #[test]
+    fn resolve_window_handles_defaults_overrides_and_no_context() {
+        assert_eq!(resolve_window(None, false, 1), 1);
+        assert_eq!(resolve_window(Some(2), false, 1), 2);
+        assert_eq!(resolve_window(Some(0), false, 1), 0);
+        assert_eq!(resolve_window(None, true, 1), 0);
+        assert_eq!(resolve_window(Some(3), true, 1), 0);
+    }
+
+    #[test]
+    fn cli_parses_search_and_ask_context_flags() {
+        let cli = Cli::try_parse_from(["knowledge", "search", "hola"]).unwrap();
+        match cli.command {
+            Commands::Search {
+                window, no_context, ..
+            } => {
+                assert_eq!(window, None);
+                assert!(!no_context);
+            }
+            _ => panic!("expected Search"),
+        }
+
+        let cli = Cli::try_parse_from(["knowledge", "search", "hola", "-w", "2", "--no-context"])
+            .unwrap();
+        match cli.command {
+            Commands::Search {
+                window, no_context, ..
+            } => {
+                assert_eq!(window, Some(2));
+                assert!(no_context);
+            }
+            _ => panic!("expected Search"),
+        }
+
+        let cli = Cli::try_parse_from(["knowledge", "ask", "hola", "--window", "0"]).unwrap();
+        match cli.command {
+            Commands::Ask {
+                window, no_context, ..
+            } => {
+                assert_eq!(window, Some(0));
+                assert!(!no_context);
+            }
+            _ => panic!("expected Ask"),
+        }
     }
 }
