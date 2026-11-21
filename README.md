@@ -71,19 +71,21 @@ Flags: `question`, `--owner`, `-k` (default 5), `--max-tokens` (default 512),
 ## Usage
 
 ```bash
-knowledge add doc.md            # ingest a file ("-" reads stdin)
-knowledge add doc.md --meta     # LLM title/keywords extraction
-knowledge list                  # list documents
-knowledge owners                # list owner namespaces
+knowledge add doc.md                      # ingest a file ("-" reads stdin)
+knowledge add -t "nota rápida o texto"    # ingest a raw string directly (-t / --text)
+knowledge add -t "nota" --name "mi-nota"  # ingest a string with a custom name
+knowledge add doc.md --meta               # LLM title/keywords extraction
+knowledge list                            # list documents
+knowledge owners                          # list owner namespaces
 knowledge search "pregunta parafraseada" --mode vector   # semantic (default)
-knowledge search "sensores" --mode lexical                        # FTS5 BM25
-knowledge search "financiamiento" --mode hybrid                   # RRF fusion
-knowledge ask "¿Quién financia el Proyecto Aurora?"               # grounded answer + sources
-knowledge rm doc.md             # remove document
-knowledge chown doc.md alice    # change document owner
-knowledge status                # config + db summary
-knowledge update                # update the CLI (cargo install or GitHub Release)
-knowledge setup                 # create/check data directory and config
+knowledge search "sensores" --mode lexical               # FTS5 BM25
+knowledge search "financiamiento" --mode hybrid          # RRF fusion
+knowledge ask "¿Quién financia el Proyecto Aurora?"      # grounded answer + sources
+knowledge rm doc.md                       # remove document
+knowledge chown doc.md alice              # change document owner
+knowledge status                          # config + db summary
+knowledge update                          # update the CLI (cargo install or GitHub Release)
+knowledge setup                           # create/check data directory and config
 ```
 
 `knowledge update` checks the installed source: when the binary lives in the Cargo bin directory it runs `cargo install knowledge-cli --force` (preserving the `native` feature if `native-ask` is present), otherwise it downloads the matching GitHub Release archive for the current platform and replaces the `knowledge` and `native-ask` binaries in place.
@@ -156,8 +158,8 @@ retrieval remains stable.
 ## Development
 
 ```bash
-cargo test                     # 56 unit tests (no sidecars required)
-cargo test --features native   # 59 unit tests, including candle in-process generation
+cargo test                     # 61 unit tests (no sidecars required)
+cargo test --features native   # 64 unit tests, including candle in-process generation
 cargo run -- status
 cargo build --release --features native
 ```
