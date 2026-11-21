@@ -51,6 +51,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
 );
 "#;
 
+#[allow(dead_code)]
 const SCHEMA_V2: &str = r#"
 CREATE TABLE IF NOT EXISTS documents (
     id INTEGER PRIMARY KEY,
@@ -96,11 +97,76 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
 );
 "#;
 
+const SCHEMA_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL UNIQUE,
+    hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    owner TEXT NOT NULL DEFAULT '_shared',
+    title TEXT,
+    description TEXT,
+    keywords TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id INTEGER PRIMARY KEY,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    section TEXT,
+    text TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    text,
+    content='chunks',
+    content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_ai
+AFTER INSERT ON chunks
+BEGIN
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad
+AFTER DELETE ON chunks
+BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
+    chunk_id INTEGER PRIMARY KEY,
+    embedding float[1024]
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad_vec
+AFTER DELETE ON chunks
+BEGIN
+    DELETE FROM chunks_vec WHERE chunk_id = old.id;
+END;
+"#;
+
 const MIGRATION_V1_TO_V2: &str = r#"
 ALTER TABLE documents ADD COLUMN owner TEXT NOT NULL DEFAULT '_shared';
 ALTER TABLE documents ADD COLUMN title TEXT;
 ALTER TABLE documents ADD COLUMN description TEXT;
 ALTER TABLE documents ADD COLUMN keywords TEXT;
+"#;
+
+const MIGRATION_V2_TO_V3: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner);
+CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+CREATE TRIGGER IF NOT EXISTS chunks_ad_vec
+AFTER DELETE ON chunks
+BEGIN
+    DELETE FROM chunks_vec WHERE chunk_id = old.id;
+END;
 "#;
 
 /// A single search result.
@@ -184,18 +250,24 @@ fn init_schema(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(KnowledgeError::Db)?;
-    if version >= 2 {
+    if version >= 3 {
         return Ok(());
     }
 
     let tx = conn.transaction().map_err(KnowledgeError::Db)?;
-    if version == 1 {
-        tx.execute_batch(MIGRATION_V1_TO_V2)
-            .map_err(KnowledgeError::Db)?;
+    if version == 0 {
+        tx.execute_batch(SCHEMA_V3).map_err(KnowledgeError::Db)?;
     } else {
-        tx.execute_batch(SCHEMA_V2).map_err(KnowledgeError::Db)?;
+        if version == 1 {
+            tx.execute_batch(MIGRATION_V1_TO_V2)
+                .map_err(KnowledgeError::Db)?;
+        }
+        if version <= 2 {
+            tx.execute_batch(MIGRATION_V2_TO_V3)
+                .map_err(KnowledgeError::Db)?;
+        }
     }
-    tx.execute("PRAGMA user_version = 2", [])
+    tx.execute("PRAGMA user_version = 3", [])
         .map_err(KnowledgeError::Db)?;
     tx.commit().map_err(KnowledgeError::Db)?;
     Ok(())
@@ -552,7 +624,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -596,13 +668,58 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
 
         let docs = list_documents(&conn).unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].source, "legacy.txt");
         assert_eq!(docs[0].hash, "deadbeef");
         assert_eq!(docs[0].owner, "_shared");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_from_v2_preserves_data_and_adds_indexes_and_trigger() {
+        let pid = std::process::id();
+        let path = PathBuf::from(format!(
+            "{}/knowledge_v2_migration_test_{pid}.db",
+            std::env::temp_dir().display()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            register_vec_extension().unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+                .unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute(
+                "INSERT INTO documents(source, hash, owner, title) VALUES (?1, ?2, ?3, ?4)",
+                params!["doc-v2.md", "hashv2", "alice", "Alice Doc"],
+            )
+            .unwrap();
+            conn.execute("PRAGMA user_version = 2", []).unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+
+        let docs = list_documents(&conn).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].source, "doc-v2.md");
+        assert_eq!(docs[0].owner, "alice");
+        assert_eq!(docs[0].title.as_deref(), Some("Alice Doc"));
+
+        // Verify index on chunks(document_id) exists
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_chunks_document_id'")
+            .unwrap();
+        let idx_count = stmt.query_map([], |_| Ok(())).unwrap().count();
+        assert_eq!(idx_count, 1);
 
         let _ = std::fs::remove_file(&path);
     }
