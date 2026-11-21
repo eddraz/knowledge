@@ -68,7 +68,9 @@ fn update_cargo(current: &str, cargo_bin_dir: &Path, verbose: bool) -> Result<()
         .and_then(|c| c.get("max_stable_version"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            KnowledgeError::Other("could not parse crates.io response for max_stable_version".into())
+            KnowledgeError::Other(
+                "could not parse crates.io response for max_stable_version".into(),
+            )
         })?;
 
     if version_compare(current, remote) == Ordering::Equal {
@@ -100,7 +102,10 @@ fn update_cargo(current: &str, cargo_bin_dir: &Path, verbose: bool) -> Result<()
         }
         cmd.arg("--features").arg("native");
     }
-    let status = cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit()).status()?;
+    let status = cmd
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
     if !status.success() {
         return Err(KnowledgeError::Other(format!(
             "cargo install knowledge-cli failed ({status})"
@@ -151,9 +156,7 @@ fn update_release(current: &str, exe_path: &Path, verbose: bool) -> Result<()> {
     let tmp_dir = env::temp_dir().join(format!("knowledge-update-{}", std::process::id()));
     fs::create_dir_all(&tmp_dir)?;
 
-    let asset_url = format!(
-        "https://github.com/eddraz/knowledge/releases/download/{tag}/{name}"
-    );
+    let asset_url = format!("https://github.com/eddraz/knowledge/releases/download/{tag}/{name}");
     let archive_path = tmp_dir.join(&name);
 
     if verbose {
@@ -194,9 +197,7 @@ fn update_release(current: &str, exe_path: &Path, verbose: bool) -> Result<()> {
 
     match Command::new(&knowledge_target).arg("--version").output() {
         Ok(output) if output.status.success() => {
-            let new_version = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string();
+            let new_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             println!("updated: {current} -> {new_version}");
             if let Some(old) = knowledge_old {
                 let _ = fs::remove_file(old);
@@ -399,7 +400,10 @@ mod tests {
     #[test]
     fn version_compare_malformed_fallback() {
         assert_eq!(version_compare("0.1.0", "0.1.0-alpha"), Ordering::Less);
-        assert_eq!(version_compare("0.1.0-alpha", "0.1.0-alpha"), Ordering::Equal);
+        assert_eq!(
+            version_compare("0.1.0-alpha", "0.1.0-alpha"),
+            Ordering::Equal
+        );
         assert_eq!(version_compare("v0.1.0", "0.1.0"), Ordering::Less);
     }
 
