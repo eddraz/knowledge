@@ -9,11 +9,12 @@ use reqwest::Client;
 use crate::config::Config;
 use crate::error::{KnowledgeError, Result};
 
-
-
 /// Active embedding backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbedderMode {
+    /// Opportunistic dual backend: daemon socket / HTTP endpoint if responding,
+    /// with transparent in-process candle bge-m3 fallback.
+    Hybrid,
     /// In-process candle bge-m3 (PyTorch checkpoint).
     Native,
     /// llama-server `--embedding` sidecar (GGUF).
@@ -24,13 +25,30 @@ pub enum EmbedderMode {
 /// optional `KNOWLEDGE_EMBEDDER` environment variable.
 ///
 /// Rules:
-/// * `native` feature present, no env → `Native`
+/// * `native` feature present, no env → `Hybrid` (opportunistic daemon + candle)
+/// * `native` feature present, `hybrid` | `auto` → `Hybrid`
+/// * `native` feature present, `native` → `Native`
 /// * `native` feature present, `sidecar` → `Sidecar`
 /// * no `native` feature, no env → `Sidecar`
-/// * no `native` feature, `native` → error
+/// * no `native` feature, `sidecar` → `Sidecar`
+/// * no `native` feature, `native` | `hybrid` | `auto` → error
 /// * any other env value → error
-pub fn resolve_embedder_mode(feature_native: bool, env_value: Option<&str>) -> Result<EmbedderMode> {
+pub fn resolve_embedder_mode(
+    feature_native: bool,
+    env_value: Option<&str>,
+) -> Result<EmbedderMode> {
     match env_value {
+        Some("hybrid") | Some("auto") => {
+            if feature_native {
+                Ok(EmbedderMode::Hybrid)
+            } else {
+                Err(KnowledgeError::Other(
+                    "KNOWLEDGE_EMBEDDER=hybrid requires the native feature; \
+                     this binary was built without it"
+                        .to_string(),
+                ))
+            }
+        }
         Some("native") => {
             if feature_native {
                 Ok(EmbedderMode::Native)
@@ -44,11 +62,11 @@ pub fn resolve_embedder_mode(feature_native: bool, env_value: Option<&str>) -> R
         }
         Some("sidecar") => Ok(EmbedderMode::Sidecar),
         Some(v) => Err(KnowledgeError::Other(format!(
-            "invalid KNOWLEDGE_EMBEDDER value: {v}; expected 'native' or 'sidecar'"
+            "invalid KNOWLEDGE_EMBEDDER value: {v}; expected 'hybrid', 'native', or 'sidecar'"
         ))),
         None => {
             if feature_native {
-                Ok(EmbedderMode::Native)
+                Ok(EmbedderMode::Hybrid)
             } else {
                 Ok(EmbedderMode::Sidecar)
             }
@@ -58,25 +76,38 @@ pub fn resolve_embedder_mode(feature_native: bool, env_value: Option<&str>) -> R
 
 /// Embed a batch of texts using the configured backend.
 ///
-/// For the sidecar backend the caller is responsible for ensuring the
-/// llama-server embedding sidecar is healthy before calling this function.
-/// For the native backend the model and tokenizer are loaded once per process
-/// on first use.
+/// For `Hybrid` mode, an opportunistic fast probe checks if a daemon is listening
+/// at the configured embedding endpoint (default `http://127.0.0.1:28488`).
+/// If healthy, the query is resolved in ~5-10ms via HTTP; if absent or failing,
+/// it transparently falls back to in-process Candle.
 pub async fn embed_texts(http: &Client, cfg: &Config, texts: &[String]) -> Result<Vec<Vec<f32>>> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
 
     match cfg.embedder_mode {
-        EmbedderMode::Sidecar => {
-            crate::llm::embed_texts(http, &cfg.embed_base_url(), texts).await
-        }
+        EmbedderMode::Sidecar => crate::llm::embed_texts(http, &cfg.embed_base_url(), texts).await,
         #[cfg(feature = "native")]
         EmbedderMode::Native => native::native_embed_texts(cfg, texts).await,
         #[cfg(not(feature = "native"))]
         EmbedderMode::Native => Err(KnowledgeError::Other(
             "native embedder selected but binary lacks the `native` feature".to_string(),
         )),
+        #[cfg(feature = "native")]
+        EmbedderMode::Hybrid => {
+            let base_url = cfg.embed_base_url();
+            if crate::sidecar::probe_health_fast(&base_url).await {
+                match crate::llm::embed_texts(http, &base_url, texts).await {
+                    Ok(embeddings) => return Ok(embeddings),
+                    Err(_) => {
+                        // Fall through to in-process Candle if the daemon request fails
+                    }
+                }
+            }
+            native::native_embed_texts(cfg, texts).await
+        }
+        #[cfg(not(feature = "native"))]
+        EmbedderMode::Hybrid => crate::llm::embed_texts(http, &cfg.embed_base_url(), texts).await,
     }
 }
 
@@ -124,9 +155,8 @@ mod native {
             // The BAAI/bge-m3 checkpoint stores tensors without a `roberta.`
             // prefix (verified against pytorch_model.bin), so the VarBuilder
             // root maps directly onto XLMRobertaModel.
-            let model = XLMRobertaModel::new(&config, vb).map_err(|e| {
-                KnowledgeError::Other(format!("failed to build bge-m3 model: {e}"))
-            })?;
+            let model = XLMRobertaModel::new(&config, vb)
+                .map_err(|e| KnowledgeError::Other(format!("failed to build bge-m3 model: {e}")))?;
 
             let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
                 KnowledgeError::Other(format!("failed to load bge-m3 tokenizer: {e}"))
@@ -239,7 +269,11 @@ mod native {
 
     fn get_native(cfg: &Config) -> std::result::Result<Arc<NativeEmbedder>, String> {
         NATIVE
-            .get_or_init(|| NativeEmbedder::load(cfg).map(Arc::new).map_err(|e| e.to_string()))
+            .get_or_init(|| {
+                NativeEmbedder::load(cfg)
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string())
+            })
             .clone()
     }
 
@@ -265,7 +299,22 @@ mod tests {
 
     #[test]
     fn resolve_embedder_mode_defaults_and_env() {
-        assert_eq!(resolve_embedder_mode(true, None).unwrap(), EmbedderMode::Native);
+        assert_eq!(
+            resolve_embedder_mode(true, None).unwrap(),
+            EmbedderMode::Hybrid
+        );
+        assert_eq!(
+            resolve_embedder_mode(true, Some("hybrid")).unwrap(),
+            EmbedderMode::Hybrid
+        );
+        assert_eq!(
+            resolve_embedder_mode(true, Some("auto")).unwrap(),
+            EmbedderMode::Hybrid
+        );
+        assert_eq!(
+            resolve_embedder_mode(true, Some("native")).unwrap(),
+            EmbedderMode::Native
+        );
         assert_eq!(
             resolve_embedder_mode(true, Some("sidecar")).unwrap(),
             EmbedderMode::Sidecar
@@ -283,6 +332,10 @@ mod tests {
         assert!(matches!(err, KnowledgeError::Other(_)));
         assert!(err.to_string().contains("native feature"));
 
+        let err = resolve_embedder_mode(false, Some("hybrid")).unwrap_err();
+        assert!(matches!(err, KnowledgeError::Other(_)));
+        assert!(err.to_string().contains("native feature"));
+
         let err = resolve_embedder_mode(true, Some("invalid")).unwrap_err();
         assert!(matches!(err, KnowledgeError::Other(_)));
         assert!(err.to_string().contains("invalid KNOWLEDGE_EMBEDDER"));
@@ -293,8 +346,8 @@ mod tests {
     fn l2_normalize_unit_length() {
         use candle::Device;
 
-        let x = candle::Tensor::new(&[[3.0_f32, 4.0_f32], [1.0_f32, 0.0_f32]], &Device::Cpu)
-            .unwrap();
+        let x =
+            candle::Tensor::new(&[[3.0_f32, 4.0_f32], [1.0_f32, 0.0_f32]], &Device::Cpu).unwrap();
         let normalized = native::l2_normalize(&x).unwrap();
         let out = normalized.to_vec2::<f32>().unwrap();
 
@@ -309,13 +362,14 @@ mod tests {
     fn cls_selection_takes_first_position() {
         use candle::Device;
 
-        let hidden =
-            candle::Tensor::new(
-                &[[[1.0_f32, 2.0_f32], [3.0_f32, 4.0_f32]],
-                  [[5.0_f32, 6.0_f32], [7.0_f32, 8.0_f32]]],
-                &Device::Cpu,
-            )
-            .unwrap();
+        let hidden = candle::Tensor::new(
+            &[
+                [[1.0_f32, 2.0_f32], [3.0_f32, 4.0_f32]],
+                [[5.0_f32, 6.0_f32], [7.0_f32, 8.0_f32]],
+            ],
+            &Device::Cpu,
+        )
+        .unwrap();
         let cls = hidden.get_on_dim(1, 0).unwrap();
         let out = cls.to_vec2::<f32>().unwrap();
 

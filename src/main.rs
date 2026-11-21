@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Owners => cmd_owners(&cfg)?,
         Commands::Rm { source } => cmd_rm(&cfg, &source)?,
         Commands::Chown { source, owner } => cmd_chown(&cfg, &source, &owner)?,
-        Commands::Status => cmd_status(&cfg)?,
+        Commands::Status => cmd_status(&cfg).await?,
         Commands::Setup => cmd_setup(&mut cfg)?,
         Commands::Update => knowledge::update::cmd_update(verbose).map_err(map_err)?,
     }
@@ -334,15 +334,14 @@ fn cmd_chown(cfg: &Config, source: &str, owner: &str) -> anyhow::Result<()> {
 }
 
 fn count(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<i64> {
-    Ok(conn
-        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-            row.get(0)
-        })
-        .map_err(KnowledgeError::Db)
-        .map_err(map_err)?)
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })
+    .map_err(KnowledgeError::Db)
+    .map_err(map_err)
 }
 
-fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
+async fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
     let conn = open_db(cfg)?;
     let documents = count(&conn, "documents")?;
     let chunks = count(&conn, "chunks")?;
@@ -356,6 +355,34 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
     println!("models dir: {}", cfg.models_dir.display());
 
     match cfg.embedder_mode {
+        EmbedderMode::Hybrid => {
+            let daemon_online = sidecar::probe_health_fast(&cfg.embed_base_url()).await;
+            let status = if daemon_online {
+                "active (daemon)"
+            } else {
+                "active (candle fallback)"
+            };
+            println!("embedder: hybrid [{status}]");
+            println!(
+                "  endpoint: {} (responding: {daemon_online})",
+                cfg.embed_base_url()
+            );
+            println!(
+                "  candle config: {} (exists: {})",
+                cfg.native_embed_config_path().display(),
+                cfg.native_embed_config_path().exists()
+            );
+            println!(
+                "  candle tokenizer: {} (exists: {})",
+                cfg.native_embed_tokenizer_path().display(),
+                cfg.native_embed_tokenizer_path().exists()
+            );
+            println!(
+                "  candle weights: {} (exists: {})",
+                cfg.native_embed_weights_path().display(),
+                cfg.native_embed_weights_path().exists()
+            );
+        }
         EmbedderMode::Native => {
             println!("embedder: native candle bge-m3");
             println!(
@@ -413,8 +440,29 @@ fn cmd_status(cfg: &Config) -> anyhow::Result<()> {
 
 fn cmd_setup(cfg: &mut Config) -> anyhow::Result<()> {
     bootstrap::ensure_ready(cfg, true).map_err(map_err)?;
-    println!("llama-server: {}", cfg.llama_server_bin.display());
+    if cfg.embedder_mode == EmbedderMode::Sidecar || !cfg!(feature = "native") {
+        println!("llama-server: {}", cfg.llama_server_bin.display());
+    }
     match cfg.embedder_mode {
+        EmbedderMode::Hybrid => {
+            println!(
+                "embedder: hybrid (endpoint on :{} if active, candle fallback)",
+                cfg.embed_port
+            );
+            println!("  endpoint: {}", cfg.embed_base_url());
+            println!(
+                "  candle config: {}",
+                cfg.native_embed_config_path().display()
+            );
+            println!(
+                "  candle tokenizer: {}",
+                cfg.native_embed_tokenizer_path().display()
+            );
+            println!(
+                "  candle weights: {}",
+                cfg.native_embed_weights_path().display()
+            );
+        }
         EmbedderMode::Native => {
             println!("embedder: native candle bge-m3");
             println!("  config: {}", cfg.native_embed_config_path().display());
@@ -422,10 +470,7 @@ fn cmd_setup(cfg: &mut Config) -> anyhow::Result<()> {
                 "  tokenizer: {}",
                 cfg.native_embed_tokenizer_path().display()
             );
-            println!(
-                "  weights: {}",
-                cfg.native_embed_weights_path().display()
-            );
+            println!("  weights: {}", cfg.native_embed_weights_path().display());
         }
         EmbedderMode::Sidecar => {
             println!("embed model: {}", cfg.embed_model_path().display());

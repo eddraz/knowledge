@@ -129,15 +129,17 @@ pub fn ensure_registry_file(models_dir: &Path, name: &str, verbose: bool) -> Res
 /// is `false`, progress lines (prefixed `[bootstrap]`) are emitted only while
 /// doing work.
 pub fn ensure_ready(cfg: &mut Config, verbose: bool) -> Result<()> {
-    resolve_llama_server_binary(cfg, verbose)?;
-    if cfg.embedder_mode == EmbedderMode::Native {
+    let needs_llama_server =
+        cfg.embedder_mode == EmbedderMode::Sidecar || !cfg!(feature = "native");
+    resolve_llama_server_binary(cfg, verbose, needs_llama_server)?;
+    if cfg.embedder_mode == EmbedderMode::Native || cfg.embedder_mode == EmbedderMode::Hybrid {
         ensure_native_embed_models(cfg, verbose)?;
     }
     ensure_models(cfg, verbose)?;
     Ok(())
 }
 
-fn resolve_llama_server_binary(cfg: &mut Config, verbose: bool) -> Result<()> {
+fn resolve_llama_server_binary(cfg: &mut Config, verbose: bool, required: bool) -> Result<()> {
     let fork_bin = fork_bin_path(&cfg.apps_dir);
 
     if let Some(bin) = resolve_llama_server(&fork_bin, &cfg.llama_server_bin) {
@@ -145,6 +147,10 @@ fn resolve_llama_server_binary(cfg: &mut Config, verbose: bool) -> Result<()> {
         if verbose {
             eprintln!("[bootstrap] llama-server resolved at {}", bin.display());
         }
+        return Ok(());
+    }
+
+    if !required {
         return Ok(());
     }
 
@@ -256,7 +262,7 @@ fn ensure_models(cfg: &Config, verbose: bool) -> Result<()> {
     fs::create_dir_all(&cfg.models_dir)?;
 
     let model_names: Vec<&String> = match cfg.embedder_mode {
-        EmbedderMode::Native => vec![&cfg.gen_model],
+        EmbedderMode::Native | EmbedderMode::Hybrid => vec![&cfg.gen_model],
         EmbedderMode::Sidecar => vec![&cfg.embed_model, &cfg.gen_model],
     };
     for name in model_names {

@@ -12,6 +12,7 @@ use knowledge::ask::{build_prompt, passes_gate};
 use knowledge::bootstrap;
 use knowledge::config::Config;
 use knowledge::db;
+use knowledge::embed::{embed_texts, EmbedderMode};
 use knowledge::error::{KnowledgeError, Result};
 use knowledge::llm::{self, EMBED_DIM};
 use knowledge::native::{generate_with_loaded, load_model, load_tokenizer, DEFAULT_TOKENIZER_NAME};
@@ -21,7 +22,7 @@ use knowledge::sidecar::{acquire, SidecarRole};
 #[derive(Parser)]
 #[command(
     name = "native-ask",
-    about = "In-process RAG: retrieve with the embedding sidecar, generate with candle"
+    about = "In-process RAG: retrieve and generate with candle in-process"
 )]
 struct Args {
     /// Question to answer.
@@ -88,8 +89,22 @@ async fn run() -> Result<()> {
     let conn = db::open(&cfg.db_path)?;
 
     eprintln!("[native] embedding question...");
-    let _embed_handle = acquire(&cfg, SidecarRole::Embedding).await?;
-    let query_vec = embed_query(&http, &cfg.embed_base_url(), &args.question).await?;
+    let _embed_handle = if cfg.embedder_mode == EmbedderMode::Sidecar {
+        Some(acquire(&cfg, SidecarRole::Embedding).await?)
+    } else {
+        None
+    };
+    let embeddings = embed_texts(&http, &cfg, std::slice::from_ref(&args.question)).await?;
+    let query_vec = embeddings
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| vec![0.0_f32; EMBED_DIM]);
+    if query_vec.len() != EMBED_DIM {
+        return Err(KnowledgeError::Other(format!(
+            "expected embedding dimension {EMBED_DIM}, got {}",
+            query_vec.len()
+        )));
+    }
 
     let hits = db::knn_search(&conn, &query_vec, args.k, args.owner.as_deref())?;
     let best = hits.first().map(|h| h.score as f32);
@@ -123,19 +138,4 @@ async fn run() -> Result<()> {
     );
 
     Ok(())
-}
-
-async fn embed_query(http: &reqwest::Client, base_url: &str, question: &str) -> Result<Vec<f32>> {
-    let embeddings = llm::embed_texts(http, base_url, &[question.to_string()]).await?;
-    let vec = embeddings
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| vec![0.0_f32; EMBED_DIM]);
-    if vec.len() != EMBED_DIM {
-        return Err(KnowledgeError::Other(format!(
-            "expected embedding dimension {EMBED_DIM}, got {}",
-            vec.len()
-        )));
-    }
-    Ok(vec)
 }

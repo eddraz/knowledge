@@ -24,7 +24,7 @@ answered **strictly** from their content. Everything runs on your machine.
 
 - No `llama-server` needed — embeddings and generation run in-process via candle
 - Still needs `LFM2.5-230M-F16.gguf` (candle loads it for generation)
-- bge-m3 F32 weights auto-download on first native use (see [Native embeddings](#native-embeddings-features-native) below)
+- bge-m3 F32 weights auto-download on first native use (see [Hybrid & Native embeddings](#hybrid--native-embeddings-features-native) below)
 
 ## Install
 
@@ -57,9 +57,9 @@ See https://github.com/eddraz/knowledge/releases.
 
 ### native-ask
 
-`native-ask` (shipped in release tarballs) provides in-process RAG: retrieval
-uses the embedding sidecar (KNN + score gate), while generation runs in-process
-via candle with the quantized LFM2.5 GGUF.
+`native-ask` (shipped in release tarballs) provides fully in-process RAG:
+both retrieval (via candle bge-m3) and generation run in-process via candle
+with the quantized LFM2.5 GGUF.
 
 ```bash
 native-ask "question" --owner alice
@@ -104,7 +104,7 @@ knowledge setup                 # create/check data directory and config
 | `KNOWLEDGE_MIN_SCORE` | `0.35` | minimum cosine to trust retrieval |
 | `KNOWLEDGE_TIMEOUT_SECS` | `120` | HTTP + sidecar health timeout |
 | `KNOWLEDGE_APPS_DIR` | `~/apps` | installed sidecar / app binaries directory |
-| `KNOWLEDGE_EMBEDDER` | `native` on native builds / `sidecar` | embedding backend selector |
+| `KNOWLEDGE_EMBEDDER` | `hybrid` on native builds / `sidecar` | embedding backend selector (`hybrid`, `native`, `sidecar`) |
 | `KNOWLEDGE_EMBED_MODEL` | `bge-m3-Q8_0.gguf` | default embedding GGUF |
 | `KNOWLEDGE_GEN_MODEL` | `LFM2.5-230M-F16.gguf` | default generation GGUF |
 
@@ -112,8 +112,8 @@ knowledge setup                 # create/check data directory and config
 
 - **Chunking**: sentence-aware, ~600 chars target with word-complete overlap,
   split on markdown section boundaries (`#`).
-- **Embeddings** (sidecar mode; native builds embed in-process, see
-  [Native embeddings](#native-embeddings-features-native) below): bge-m3 served
+- **Embeddings** (sidecar mode; native builds use opportunistic hybrid embeddings, see
+  [Hybrid & Native embeddings](#hybrid--native-embeddings-features-native) below): bge-m3 served
   by a `llama-server --embedding` sidecar; the CLI spawns it on demand and kills
   it on exit (reuses a healthy one if the port already serves).
 - **Storage**: SQLite with three access paths over the same chunks:
@@ -126,24 +126,27 @@ knowledge setup                 # create/check data directory and config
   context and cite excerpt numbers, plus a retrieval score gate.
 - **Native generation (`--features native`)**: when built with the `native`
   feature, `ask` answers and `add --meta` metadata extraction run in-process
-  via candle against the quantized LFM2.5 GGUF model. Embeddings also default to
-  in-process candle bge-m3 (see "Native embeddings" below); set
-  `KNOWLEDGE_EMBEDDER=sidecar` to keep using the embedding sidecar. The
-  trade-off is convenience (no sidecar startup for generation or embeddings)
-  vs. raw speed: candle CPU decoding is slower than the llama.cpp sidecar used
-  by the default build.
+  via candle against the quantized LFM2.5 GGUF model. Embeddings default to
+  opportunistic hybrid mode (daemon check on port 28488 with in-process candle bge-m3 fallback).
+  Set `KNOWLEDGE_EMBEDDER=sidecar` to force the llama.cpp embedding sidecar, or
+  `KNOWLEDGE_EMBEDDER=native` to force in-process candle only.
 
-## Native embeddings (`--features native`)
+## Hybrid & Native embeddings (`--features native`)
 
-When the binary is built with `--features native`, embeddings run in-process via
-`candle` against the official BAAI bge-m3 F32 checkpoint instead of the
-`llama-server --embedding` sidecar. Native embedding is the default under this
-feature; set `KNOWLEDGE_EMBEDDER=sidecar` to force the original sidecar path.
+When the binary is built with `--features native`, embeddings default to
+**Opportunistic Hybrid Mode** (`EmbedderMode::Hybrid`):
+1. **Daemon Probe**: If an embedding daemon or server is already running on the configured port (`127.0.0.1:28488`), queries are sent via HTTP for near-instant resolution (~5–10 ms).
+2. **Candle Fallback**: If no daemon is running, embeddings run in-process via `candle` against the official BAAI bge-m3 checkpoint completely offline and self-contained, with zero configuration.
 
-On first use with the native embedder, bootstrap downloads ~2.3 GB of F32
+To explicitly force a specific backend:
+- `KNOWLEDGE_EMBEDDER=hybrid`: (Default) Probe daemon on port 28488; fallback to in-process Candle.
+- `KNOWLEDGE_EMBEDDER=native`: Force in-process Candle (never probe daemon).
+- `KNOWLEDGE_EMBEDDER=sidecar`: Force `llama-server --embedding` sidecar.
+
+On first use with in-process candle, bootstrap downloads ~2.3 GB of F32
 PyTorch weights as `pytorch_model.bin` (plus `config.json` and `tokenizer.json`)
 into `$KNOWLEDGE_MODELS_DIR/bge-m3/`. The sidecar-only GGUF
-(`bge-m3-Q8_0.gguf`) is not downloaded in native mode.
+(`bge-m3-Q8_0.gguf`) is not downloaded in native mode unless sidecar mode is forced.
 
 Vectors produced by the native F32 model differ slightly from vectors produced
 by the Q8_0 sidecar (typical cosine drift ~0.001–0.01). This is expected and
@@ -153,8 +156,8 @@ retrieval remains stable.
 ## Development
 
 ```bash
-cargo test                     # 55 unit tests (no sidecars required)
-cargo test --features native   # 58 unit tests, including candle in-process generation
+cargo test                     # 56 unit tests (no sidecars required)
+cargo test --features native   # 59 unit tests, including candle in-process generation
 cargo run -- status
 cargo build --release --features native
 ```

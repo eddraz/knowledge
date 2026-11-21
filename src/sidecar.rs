@@ -151,18 +151,24 @@ fn is_transient(err: &KnowledgeError) -> bool {
     )
 }
 
-async fn probe_health(base_url: &str) -> Result<bool> {
+pub async fn probe_health(base_url: &str) -> Result<bool> {
+    probe_health_timeout(base_url, Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS)).await
+}
+
+/// Fast health probe with a 200ms timeout, useful for opportunistic daemon checks.
+pub async fn probe_health_fast(base_url: &str) -> bool {
+    probe_health_timeout(base_url, Duration::from_millis(200))
+        .await
+        .unwrap_or(false)
+}
+
+async fn probe_health_timeout(base_url: &str, timeout_dur: Duration) -> Result<bool> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS))
+        .timeout(timeout_dur)
         .build()
         .map_err(KnowledgeError::Http)?;
 
     let url = format!("{base_url}{HEALTH_PATH}");
-    // A connection failure simply means the sidecar is not running yet; the
-    // caller is expected to spawn it in that case.
-    // Any transport failure (refused, reset, timeout...) means there is no
-    // healthy sidecar listening yet; the caller spawns one in that case.
-    // Real post-spawn failures surface later in the health polling loop.
     let response = match client.get(&url).send().await {
         Ok(response) => response,
         Err(_) => return Ok(false),
