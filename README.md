@@ -160,8 +160,8 @@ retrieval remains stable.
 ## Development
 
 ```bash
-cargo test                     # 72 unit tests (no sidecars required)
-cargo test --features native   # 76 unit tests, including candle in-process generation
+cargo test                     # 74 unit tests (no sidecars required)
+cargo test --features native   # 78 unit tests, including candle in-process generation
 cargo run -- status
 cargo build --release --features native
 ```

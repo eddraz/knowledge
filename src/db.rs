@@ -393,18 +393,30 @@ pub fn knn_search(
             query.len()
         )));
     }
+    if k == 0 {
+        return Ok(Vec::new());
+    }
 
     let blob: &[u8] = bytemuck::cast_slice(query);
 
     let rows = if let Some(owner) = owner {
+        // Pre-filter inside vec0 KNN via `chunk_id IN (...)` so `v.k` applies
+        // to the owner namespace (+ `_shared`) rather than post-filtering
+        // the global top-k.
         let mut stmt = conn
             .prepare(
                 "SELECT v.chunk_id, v.distance, c.text, c.section, d.source, d.owner
                  FROM chunks_vec v
                  JOIN chunks c ON c.id = v.chunk_id
                  JOIN documents d ON d.id = c.document_id
-                 WHERE v.embedding MATCH ?1 AND v.k = ?2
-                   AND (d.owner = ?3 OR d.owner = '_shared')
+                 WHERE v.embedding MATCH ?1
+                   AND v.k = ?2
+                   AND v.chunk_id IN (
+                       SELECT c2.id
+                       FROM chunks c2
+                       JOIN documents d2 ON d2.id = c2.document_id
+                       WHERE d2.owner = ?3 OR d2.owner = '_shared'
+                   )
                  ORDER BY v.distance",
             )
             .map_err(KnowledgeError::Db)?;
@@ -446,12 +458,44 @@ fn map_knn_row(row: &rusqlite::Row) -> std::result::Result<SearchHit, rusqlite::
     })
 }
 
+/// Convert raw user input into a safe FTS5 query by extracting alphanumeric
+/// tokens and double-quoting each term so punctuation and FTS5 keywords
+/// (`AND`, `OR`, `NOT`, `NEAR`) cannot trigger syntax errors.
+fn sanitize_fts_query(query: &str) -> Option<String> {
+    let mut terms = Vec::new();
+    let mut current = String::new();
+
+    for ch in query.chars() {
+        if ch.is_alphanumeric() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            terms.push(format!("\"{}\"", std::mem::take(&mut current)));
+        }
+    }
+    if !current.is_empty() {
+        terms.push(format!("\"{current}\""));
+    }
+
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" "))
+    }
+}
+
 pub fn fts_search(
     conn: &Connection,
     query: &str,
     k: usize,
     owner: Option<&str>,
 ) -> Result<Vec<SearchHit>> {
+    if k == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(fts_query) = sanitize_fts_query(query) else {
+        return Ok(Vec::new());
+    };
+
     let rows = if let Some(owner) = owner {
         let mut stmt = conn
             .prepare(
@@ -466,7 +510,7 @@ pub fn fts_search(
             )
             .map_err(KnowledgeError::Db)?;
         let rows = stmt
-            .query_map(params![query, k as i64, owner], map_fts_row)
+            .query_map(params![&fts_query, k as i64, owner], map_fts_row)
             .map_err(KnowledgeError::Db)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(KnowledgeError::Db)?
@@ -483,7 +527,7 @@ pub fn fts_search(
             )
             .map_err(KnowledgeError::Db)?;
         let rows = stmt
-            .query_map(params![query, k as i64], map_fts_row)
+            .query_map(params![&fts_query, k as i64], map_fts_row)
             .map_err(KnowledgeError::Db)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(KnowledgeError::Db)?
@@ -1226,5 +1270,82 @@ mod tests {
         assert_eq!(enriched_missing[0].document_id, 0);
         assert!(enriched_missing[0].before.is_empty());
         assert!(enriched_missing[0].after.is_empty());
+    }
+
+    #[test]
+    fn knn_owner_filter_returns_top_k_even_when_other_owner_dominates_global_top_k() {
+        let conn = schema();
+        let other_doc = insert_document(&conn, "other.txt", "h1", "other").unwrap();
+        let target_doc = insert_document(&conn, "target.txt", "h2", "target").unwrap();
+        let shared_doc = insert_document(&conn, "shared.txt", "h3", "_shared").unwrap();
+
+        // Populate 10 chunks in `other` that match `unit_vector(0)` exactly (distance 0).
+        for i in 0..10 {
+            insert_chunk(
+                &conn,
+                other_doc,
+                None,
+                &format!("other chunk {i}"),
+                &unit_vector(0),
+            )
+            .unwrap();
+        }
+
+        // Populate chunks in `target` and `_shared` on orthogonal/angled axes
+        // so they lose globally to the 10 `other` chunks when k=2.
+        let target_c =
+            insert_chunk(&conn, target_doc, None, "target chunk", &unit_vector(1)).unwrap();
+        let shared_c =
+            insert_chunk(&conn, shared_doc, None, "shared chunk", &unit_vector(2)).unwrap();
+
+        let hits = knn_search(&conn, &unit_vector(0), 2, Some("target")).unwrap();
+        assert_eq!(hits.len(), 2);
+        let ids: Vec<i64> = hits.iter().map(|h| h.chunk_id).collect();
+        assert!(ids.contains(&target_c));
+        assert!(ids.contains(&shared_c));
+
+        // Unknown owner with no matching `_shared` chunks returns empty cleanly.
+        let empty = knn_search(&conn, &unit_vector(0), 5, Some("nonexistent")).unwrap();
+        assert_eq!(empty.len(), 1); // only `_shared` chunk matches
+        assert_eq!(empty[0].chunk_id, shared_c);
+
+        // With empty database / zero matching rows (no `_shared`), returns empty.
+        let empty_conn = schema();
+        let none = knn_search(&empty_conn, &unit_vector(0), 5, Some("target")).unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn fts_handles_punctuation_and_reserved_keywords_without_syntax_error() {
+        let conn = schema();
+        let doc = insert_document(&conn, "bible.txt", "h1", "bible-text").unwrap();
+        insert_chunk(&conn, doc, None, "Quien es Job en Mateo 1?", &[0.0; 1024]).unwrap();
+        insert_chunk(
+            &conn,
+            doc,
+            None,
+            "NOT AND OR NEAR foo:bar cafe",
+            &[0.0; 1024],
+        )
+        .unwrap();
+
+        // Punctuation and accented characters must not fail with fts5 syntax error.
+        let hits = fts_search(&conn, "¿Quién es job?", 5, Some("bible-text")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("Job"));
+
+        // FTS5 keywords, colons (`foo:bar` column filter syntax), and wildcards
+        // are treated as literal tokens rather than FTS5 syntax.
+        let kw = fts_search(&conn, "NOT AND OR NEAR foo:bar *", 5, None).unwrap();
+        assert_eq!(kw.len(), 1);
+
+        // Accented query with trailing punctuation still matches unaccented index text.
+        let accented = fts_search(&conn, "café?!", 5, None).unwrap();
+        assert_eq!(accented.len(), 1);
+
+        // Punctuation-only, empty, or k=0 queries return empty results cleanly.
+        assert!(fts_search(&conn, "???", 5, None).unwrap().is_empty());
+        assert!(fts_search(&conn, "", 5, None).unwrap().is_empty());
+        assert!(fts_search(&conn, "Job", 0, None).unwrap().is_empty());
     }
 }
